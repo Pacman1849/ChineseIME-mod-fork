@@ -14,6 +14,7 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.ChatScreen;
+import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -71,10 +72,24 @@ HudRenderCallback.EVENT.register((ctx, tickDelta) -> {
     this.statusIndicator.render(ctx);
 });
 
-        ClientTickEvents.END_CLIENT_TICK.register(client -> {
-            this.keyBindingManager.tick();
-            this.imeManager.tick();
-        });
+ClientTickEvents.END_CLIENT_TICK.register(client -> {
+        this.keyBindingManager.tick();
+        this.imeManager.tick();
+
+        if (this.imeManager.hasInput()) {
+            long window = client.getWindow().getHandle();
+            boolean leftPressed = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_LEFT) == GLFW.GLFW_PRESS;
+            boolean rightPressed = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_RIGHT) == GLFW.GLFW_PRESS;
+            boolean upPressed = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_UP) == GLFW.GLFW_PRESS;
+            boolean downPressed = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_DOWN) == GLFW.GLFW_PRESS;
+
+            if (leftPressed || upPressed) {
+                this.imeManager.selectPrev();
+            } else if (rightPressed || downPressed) {
+                this.imeManager.selectNext();
+            }
+        }
+    });
 
         LOGGER.info("[ChineseIME] Initialization complete! Platform: {}, isWindowsSync: {}", PlatformIMEManager.getPlatform(), this.imeManager.isWindowsSync());
     }
