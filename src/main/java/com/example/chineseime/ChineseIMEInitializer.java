@@ -11,6 +11,7 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.ChatScreen;
 import org.lwjgl.glfw.GLFW;
@@ -38,40 +39,67 @@ public class ChineseIMEInitializer implements ClientModInitializer {
         this.statusIndicator = new ImeStatusIndicator();
         this.imeManager = new PlatformIMEManager(this.config, this.candidateHud);
         this.keyBindingManager = new KeyBindingManager(this.config, this.imeManager);
-this.keyBindingManager.register();
+        this.keyBindingManager.register();
 
-    ClientTickEvents.END_CLIENT_TICK.register(client -> {
-        this.keyBindingManager.tick();
-        this.imeManager.tick();
+        HudRenderCallback.EVENT.register((ctx, tickDelta) -> {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            if (mc == null || mc.currentScreen == null) return;
 
-        if (this.imeManager.hasInput()) {
+            boolean inChatScreen = mc.currentScreen instanceof ChatScreen;
+            this.statusIndicator.setInChatScreen(inChatScreen);
+
+            boolean layoutChanged = this.imeManager.checkAndClearLayoutChanged();
+            boolean capsLockOn = false;
+            boolean inShiftMode = false;
+            boolean chineseMode = this.config.isChineseMode();
+
+            if (this.imeManager.isWindowsSync()) {
+                Object bridge = this.imeManager.getWindowsBridge();
+                if (bridge instanceof WindowsIMEBridgeNative windowsBridge) {
+                    capsLockOn = windowsBridge.isCapsLockOn();
+                    inShiftMode = windowsBridge.isInShiftMode();
+                    chineseMode = windowsBridge.isChineseMode();
+                }
+            }
+
+            InputMode detectedMode = this.imeManager.getDetectedInputMode();
+            this.statusIndicator.update(chineseMode, detectedMode, capsLockOn, inShiftMode, true, layoutChanged);
+
+            this.candidateHud.render(ctx);
+            this.statusIndicator.render(ctx);
+        });
+
+        ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            this.keyBindingManager.tick();
+            this.imeManager.tick();
+
             long window = client.getWindow().getHandle();
             boolean leftPressed = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_LEFT) == GLFW.GLFW_PRESS;
             boolean rightPressed = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_RIGHT) == GLFW.GLFW_PRESS;
             boolean upPressed = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_UP) == GLFW.GLFW_PRESS;
             boolean downPressed = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_DOWN) == GLFW.GLFW_PRESS;
 
-            if (leftPressed || upPressed) {
-                this.imeManager.selectPrev();
-            } else if (rightPressed || downPressed) {
-                this.imeManager.selectNext();
+            if (this.imeManager.hasInput()) {
+                if (leftPressed || upPressed) {
+                    this.imeManager.selectPrev();
+                } else if (rightPressed || downPressed) {
+                    this.imeManager.selectNext();
+                }
             }
-        }
 
-        long window = client.getWindow().getHandle();
-        boolean ctrl = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_LEFT_CONTROL) == GLFW.GLFW_PRESS ||
-                GLFW.glfwGetKey(window, GLFW.GLFW_KEY_RIGHT_CONTROL) == GLFW.GLFW_PRESS;
-        boolean shift = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_LEFT_SHIFT) == GLFW.GLFW_PRESS ||
-                GLFW.glfwGetKey(window, GLFW.GLFW_KEY_RIGHT_SHIFT) == GLFW.GLFW_PRESS;
-        if (ctrl && shift && GLFW.glfwGetKey(window, GLFW.GLFW_KEY_T) == GLFW.GLFW_PRESS) {
-            if (!this.ctrlShiftTPressed) {
-                this.imeManager.showTestCandidates();
-                this.ctrlShiftTPressed = true;
+            boolean ctrl = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_LEFT_CONTROL) == GLFW.GLFW_PRESS ||
+                    GLFW.glfwGetKey(window, GLFW.GLFW_KEY_RIGHT_CONTROL) == GLFW.GLFW_PRESS;
+            boolean shift = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_LEFT_SHIFT) == GLFW.GLFW_PRESS ||
+                    GLFW.glfwGetKey(window, GLFW.GLFW_KEY_RIGHT_SHIFT) == GLFW.GLFW_PRESS;
+            if (ctrl && shift && GLFW.glfwGetKey(window, GLFW.GLFW_KEY_T) == GLFW.GLFW_PRESS) {
+                if (!this.ctrlShiftTPressed) {
+                    this.imeManager.showTestCandidates();
+                    this.ctrlShiftTPressed = true;
+                }
+            } else {
+                this.ctrlShiftTPressed = false;
             }
-        } else {
-            this.ctrlShiftTPressed = false;
-        }
-    });
+        });
 
         LOGGER.info("[ChineseIME] Initialization complete! Platform: {}, isWindowsSync: {}", PlatformIMEManager.getPlatform(), this.imeManager.isWindowsSync());
     }
@@ -94,37 +122,5 @@ this.keyBindingManager.register();
 
     public PlatformIMEManager getImeManager() {
         return this.imeManager;
-    }
-
-    public boolean hasLayoutChanged() {
-        return this.imeManager.hasLayoutChanged();
-    }
-
-    public void renderHUD(net.minecraft.client.gui.DrawContext ctx) {
-        MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc == null) return;
-
-        boolean inChatScreen = mc.currentScreen instanceof ChatScreen;
-        this.statusIndicator.setInChatScreen(inChatScreen);
-
-        boolean layoutChanged = this.imeManager.checkAndClearLayoutChanged();
-        boolean capsLockOn = false;
-        boolean inShiftMode = false;
-        boolean chineseMode = this.config.isChineseMode();
-
-        if (this.imeManager.isWindowsSync()) {
-            Object bridge = this.imeManager.getWindowsBridge();
-            if (bridge instanceof WindowsIMEBridgeNative windowsBridge) {
-                capsLockOn = windowsBridge.isCapsLockOn();
-                inShiftMode = windowsBridge.isInShiftMode();
-                chineseMode = windowsBridge.isChineseMode();
-            }
-        }
-
-        InputMode detectedMode = this.imeManager.getDetectedInputMode();
-        this.statusIndicator.update(chineseMode, detectedMode, capsLockOn, inShiftMode, true, layoutChanged);
-
-        this.candidateHud.render(ctx);
-        this.statusIndicator.render(ctx);
     }
 }

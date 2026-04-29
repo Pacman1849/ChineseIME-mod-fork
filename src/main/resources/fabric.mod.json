@@ -13,9 +13,6 @@
       "com.example.chineseime.ChineseIMEInitializer"
     ]
   },
-  "mixins": [
-    "chineseime.mixins.json"
-  ],
   "depends": {
     "fabricloader": ">=0.16.9",
     "minecraft": "~1.21.4",
