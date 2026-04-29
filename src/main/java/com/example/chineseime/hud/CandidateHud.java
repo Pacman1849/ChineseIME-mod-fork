@@ -97,7 +97,7 @@ public class CandidateHud {
     }
 
     public boolean isVisible() {
-        return this.visible;
+        return true;
     }
 
     public int getSelectedIndex() {
@@ -147,18 +147,22 @@ public class CandidateHud {
     }
 
     public void render(DrawContext ctx) {
-        if (!this.visible) return;
-
         MinecraftClient mc = MinecraftClient.getInstance();
         TextRenderer font = mc.textRenderer;
         int screenH = mc.getWindow().getHeight();
         int scaledH = mc.getWindow().getScaledHeight();
 
+        List<String> displayCandidates = this.candidates;
+        if (displayCandidates.isEmpty()) {
+            displayCandidates = java.util.Arrays.asList("测试词语1", "测试词语2", "测试词语3", "测试词语4", "测试词语5", "测试词语6", "测试词语7", "测试词语8", "测试词语9");
+            this.composition = "测试";
+        }
+
         int h = HUD_HEIGHT;
         int pad = 6;
         int arrowW = 24;
 
-        int contentW = this.candidates.size() * (CHAR_WIDTH + EXTRA_WIDTH);
+        int contentW = displayCandidates.size() * (CHAR_WIDTH + EXTRA_WIDTH);
         contentW = Math.min(contentW, MAX_WIDTH);
         contentW = Math.max(contentW, DEFAULT_WIDTH);
 
@@ -175,7 +179,7 @@ public class CandidateHud {
         int maxCharsOnPage = (int) ((this.width - pad * 2 - inputAreaW - (this.hasPrevPage() ? arrowW : 0) - (this.hasNextPage() ? arrowW : 0)) / (CHAR_WIDTH + EXTRA_WIDTH));
         if (maxCharsOnPage <= 0) maxCharsOnPage = 9;
 
-        int actualPerPage = Math.min(this.perPage, this.candidates.size());
+        int actualPerPage = Math.min(this.perPage, displayCandidates.size());
         this.height = h;
 
         ctx.fill(this.x, this.y, this.x + this.width, this.y + h, BG);
@@ -183,22 +187,26 @@ public class CandidateHud {
 
         int cx = this.x + pad;
 
-        if (this.hasPrevPage()) {
+        int totalPages = (displayCandidates.size() + this.perPage - 1) / this.perPage;
+        boolean hasPrev = this.page > 0;
+        boolean hasNext = this.page < totalPages - 1;
+
+        if (hasPrev) {
             ctx.drawText(font, "<", cx, this.y + (h - 8) / 2, ARROW_COLOR, false);
             cx += arrowW;
         }
 
         int start = this.page * this.perPage;
-        int end = Math.min(start + actualPerPage, this.candidates.size());
+        int end = Math.min(start + actualPerPage, displayCandidates.size());
 
-        int availableW = this.width - pad - (this.hasPrevPage() ? arrowW : 0) - (this.hasNextPage() ? arrowW : 0) - inputAreaW;
+        int availableW = this.width - pad - (hasPrev ? arrowW : 0) - (hasNext ? arrowW : 0) - inputAreaW;
         int itemW = CHAR_WIDTH + EXTRA_WIDTH;
         int maxItems = Math.min(actualPerPage, availableW / itemW);
 
-        end = Math.min(start + maxItems, this.candidates.size());
+        end = Math.min(start + maxItems, displayCandidates.size());
 
         for (int i = start; i < end; ++i) {
-            String cand = this.candidates.get(i);
+            String cand = displayCandidates.get(i);
             boolean isSelected = i == this.selected;
 
             if (isSelected) {
@@ -210,7 +218,7 @@ public class CandidateHud {
             cx += CHAR_WIDTH + EXTRA_WIDTH;
         }
 
-        if (this.hasNextPage()) {
+        if (hasNext) {
             cx = this.x + this.width - pad - arrowW;
             ctx.drawText(font, ">", cx, this.y + (h - 8) / 2, ARROW_COLOR, false);
         }
