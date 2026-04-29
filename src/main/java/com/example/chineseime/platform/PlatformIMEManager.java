@@ -57,6 +57,10 @@ public void tick() {
 private void syncFromWindows() {
         if (windowsBridge == null) return;
 
+        if (testModeActive) {
+            return;
+        }
+
         List<String> winCandidates = windowsBridge.getCandidates();
         String winComposition = windowsBridge.getComposition();
 
