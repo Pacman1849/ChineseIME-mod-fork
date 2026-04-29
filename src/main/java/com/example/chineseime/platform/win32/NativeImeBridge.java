@@ -1,0 +1,233 @@
+package com.example.chineseime.platform.win32;
+
+import com.example.chineseime.ChineseIMEInitializer;
+import com.example.chineseime.engine.InputMode;
+import com.sun.jna.Native;
+import com.sun.jna.Pointer;
+import com.sun.jna.WString;
+import com.sun.jna.win32.StdCallLibrary;
+import com.sun.jna.win32.W32APIOptions;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ConcurrentLinkedQueue;
+
+public class NativeImeBridge {
+    public static final int IME_TYPE_UNKNOWN = 0;
+    public static final int IME_TYPE_ENGLISH = 1;
+    public static final int IME_TYPE_PINYIN = 2;
+    public static final int IME_TYPE_ZHUYIN = 3;
+    public static final int IME_TYPE_CANGJIE = 4;
+    public static final int IME_TYPE_WUBI = 5;
+    public static final int IME_TYPE_SUCHENG = 6;
+    public static final int IME_TYPE_OTHER_CHINESE = 99;
+
+    private static NativeLibrary INSTANCE = null;
+    private static boolean loaded = false;
+    private static boolean loadAttempted = false;
+    private static final Object LOAD_LOCK = new Object();
+
+    public static boolean isAvailable() {
+        return loaded && INSTANCE != null;
+    }
+
+    public static synchronized NativeLibrary getInstance() {
+        if (!loadAttempted) {
+            loadAttempted = true;
+            loadNative();
+        }
+        return INSTANCE;
+    }
+
+private static void loadNative() {
+    ChineseIMEInitializer.LOGGER.info("[ChineseIME] Loading native library...");
+    try {
+        InputStream dllStream = NativeImeBridge.class.getResourceAsStream("/META-INF/natives/chineseime_native.dll");
+        ChineseIMEInitializer.LOGGER.info("[ChineseIME] DLL stream: {}", dllStream != null ? "found" : "null");
+        if (dllStream != null) {
+            Path tempDir = Files.createTempDirectory("chineseime_native");
+            Path dllPath = tempDir.resolve("chineseime_native.dll");
+            Files.copy(dllStream, dllPath, StandardCopyOption.REPLACE_EXISTING);
+            dllStream.close();
+            dllPath.toFile().deleteOnExit();
+            tempDir.toFile().deleteOnExit();
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] Loading DLL from: {}", dllPath);
+            INSTANCE = Native.load(dllPath.toString(), NativeLibrary.class, W32APIOptions.UNICODE_OPTIONS);
+            loaded = true;
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] DLL loaded successfully");
+        } else {
+            ChineseIMEInitializer.LOGGER.warn("[ChineseIME] DLL not found in JAR, using fallback");
+            loaded = false;
+        }
+    } catch (Exception e) {
+        ChineseIMEInitializer.LOGGER.warn("[ChineseIME] DLL load failed: {} - using fallback", e.getMessage());
+        e.printStackTrace();
+        loaded = false;
+    }
+}
+
+    public static boolean startListening(long hwnd) {
+        if (!isAvailable()) return false;
+
+        Pointer hwndPtr = hwnd != 0L ? Pointer.createConstant(hwnd) : null;
+        int result = INSTANCE.StartListen(hwndPtr);
+        return result == 1;
+    }
+
+    public static void stopListening() {
+        if (isAvailable()) {
+            INSTANCE.StopListen();
+        }
+    }
+
+    public static int startTsfListening() {
+        if (!isAvailable()) return 0;
+        return INSTANCE.StartTsfListen();
+    }
+
+    public static void stopTsfListening() {
+        if (isAvailable()) {
+            INSTANCE.StopTsfListen();
+        }
+    }
+
+    public static boolean isTsfListening() {
+        return isAvailable() && INSTANCE.IsTsfListening() == 1;
+    }
+
+    public static boolean isChineseMode() {
+        return isAvailable() && INSTANCE.IsChineseMode() == 1;
+    }
+
+    public static boolean hasLayoutChanged() {
+        return isAvailable() && INSTANCE.HasLayoutChanged() == 1;
+    }
+
+    public static boolean hasTsfLayoutChanged() {
+        return isAvailable() && INSTANCE.HasTsfLayoutChanged() == 1;
+    }
+
+    public static String getCompositionString() {
+        if (!isAvailable()) return "";
+        char[] buffer = new char[256];
+        int len = INSTANCE.GetCompositionString(buffer, buffer.length);
+        return len <= 0 ? "" : new String(buffer, 0, len);
+    }
+
+    public static int getCandidateCount() {
+        return isAvailable() ? INSTANCE.GetCandidateCount() : 0;
+    }
+
+    public static String getCandidate(int index) {
+        if (!isAvailable()) return "";
+        char[] buffer = new char[64];
+        int len = INSTANCE.GetCandidate(index, buffer, buffer.length);
+        return len <= 0 ? "" : new String(buffer, 0, len);
+    }
+
+    public static List<String> getCandidates() {
+        List<String> result = new ArrayList<>();
+        if (!isAvailable()) return result;
+
+        int count = INSTANCE.GetCandidateCount();
+        for (int i = 0; i < count && i < 20; i++) {
+            String cand = getCandidate(i);
+            if (!cand.isEmpty()) {
+                result.add(cand);
+            }
+        }
+        return result;
+    }
+
+    public static int getSelectedCandidateIndex() {
+        return isAvailable() ? INSTANCE.GetSelectedCandidateIndex() : 0;
+    }
+
+    public static boolean getImeOpenStatus() {
+        return isAvailable() && INSTANCE.GetImeOpenStatus() == 1;
+    }
+
+    public static boolean getTsfChineseMode() {
+        return isAvailable() && INSTANCE.GetTsfChineseMode() == 1;
+    }
+
+    public static void refreshImeState() {
+        if (isAvailable()) {
+            INSTANCE.RefreshImeState();
+        }
+    }
+
+    public static boolean getShiftMode() {
+        return isAvailable() && INSTANCE.GetShiftMode() == 1;
+    }
+
+    public static boolean getCapsLockState() {
+        return isAvailable() && INSTANCE.GetCapsLockState() == 1;
+    }
+
+    public static int getInputMethodType() {
+        return isAvailable() ? INSTANCE.GetInputMethodType() : 0;
+    }
+
+    public static InputMode getInputMethodTypeAsEnum() {
+        return getInputMethodTypeAsEnum(getInputMethodType());
+    }
+
+    public static InputMode getInputMethodTypeAsEnum(int type) {
+        return switch (type) {
+            case IME_TYPE_ENGLISH -> InputMode.LATIN;
+            case IME_TYPE_PINYIN -> InputMode.PINYIN;
+            case IME_TYPE_ZHUYIN -> InputMode.ZHUYIN;
+            case IME_TYPE_CANGJIE -> InputMode.CANGJIE;
+            case IME_TYPE_WUBI -> InputMode.WUBI;
+            case IME_TYPE_SUCHENG -> InputMode.SUCHENG;
+            case IME_TYPE_OTHER_CHINESE -> InputMode.OTHER;
+            default -> InputMode.OTHER;
+        };
+    }
+
+    public static String getInputMethodTypeString() {
+        return getInputMethodTypeString(getInputMethodType());
+    }
+
+    public static String getInputMethodTypeString(int type) {
+        return switch (type) {
+            case IME_TYPE_ENGLISH -> "En";
+            case IME_TYPE_PINYIN -> "拼";
+            case IME_TYPE_ZHUYIN -> "注";
+            case IME_TYPE_CANGJIE -> "仓";
+            case IME_TYPE_WUBI -> "五";
+            case IME_TYPE_SUCHENG -> "速";
+            case IME_TYPE_OTHER_CHINESE -> "?";
+            default -> "?";
+        };
+    }
+
+    public interface NativeLibrary extends StdCallLibrary {
+        String GetDllVersion();
+        int StartListen(Pointer hwnd);
+        void StopListen();
+        int IsListening();
+        int IsChineseMode();
+        int HasLayoutChanged();
+        int StartTsfListen();
+        void StopTsfListen();
+        int IsTsfListening();
+        int GetCompositionString(char[] buffer, int bufferSize);
+        int GetCandidateCount();
+        int GetCandidate(int index, char[] buffer, int bufferSize);
+        int GetSelectedCandidateIndex();
+        int GetImeOpenStatus();
+        int GetTsfChineseMode();
+        int HasTsfLayoutChanged();
+        int GetInputMethodType();
+        int GetShiftMode();
+        int GetCapsLockState();
+        void RefreshImeState();
+        void FreeBuffer(Pointer ptr);
+        long GetKeyboardLayoutHKL();
+    }
+}

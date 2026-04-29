@@ -1,0 +1,11 @@
+pluginManagement {
+    repositories {
+        maven {
+            name = "FabricMC"
+            url = uri("https://maven.fabricmc.net/")
+        }
+        gradlePluginPortal()
+    }
+}
+
+rootProject.name = "chineseime"
