@@ -28,6 +28,7 @@ public class ChineseIMEInitializer implements ClientModInitializer {
     private ImeStatusIndicator statusIndicator;
     private PlatformIMEManager imeManager;
     private KeyBindingManager keyBindingManager;
+    private boolean ctrlShiftTPressed = false;
 
     @Override
     public void onInitializeClient() {
@@ -88,6 +89,20 @@ ClientTickEvents.END_CLIENT_TICK.register(client -> {
             } else if (rightPressed || downPressed) {
                 this.imeManager.selectNext();
             }
+        }
+
+        long window = client.getWindow().getHandle();
+        boolean ctrl = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_LEFT_CONTROL) == GLFW.GLFW_PRESS ||
+                GLFW.glfwGetKey(window, GLFW.GLFW_KEY_RIGHT_CONTROL) == GLFW.GLFW_PRESS;
+        boolean shift = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_LEFT_SHIFT) == GLFW.GLFW_PRESS ||
+                GLFW.glfwGetKey(window, GLFW.GLFW_KEY_RIGHT_SHIFT) == GLFW.GLFW_PRESS;
+        if (ctrl && shift && GLFW.glfwGetKey(window, GLFW.GLFW_KEY_T) == GLFW.GLFW_PRESS) {
+            if (!this.ctrlShiftTPressed) {
+                this.imeManager.showTestCandidates();
+                this.ctrlShiftTPressed = true;
+            }
+        } else {
+            this.ctrlShiftTPressed = false;
         }
     });
 

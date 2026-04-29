@@ -3,6 +3,7 @@ package com.example.chineseime.platform;
 import com.example.chineseime.ChineseIMEInitializer;
 import com.example.chineseime.config.ModConfig;
 import com.example.chineseime.engine.InputMode;
+import com.example.chineseime.engine.PinyinDictionary;
 import com.example.chineseime.hud.CandidateHud;
 import com.example.chineseime.platform.win32.WindowsIMEBridgeNative;
 import java.util.List;
@@ -54,19 +55,24 @@ public void tick() {
 }
 
 private void syncFromWindows() {
-    if (windowsBridge == null) return;
+        if (windowsBridge == null) return;
 
-    List<String> winCandidates = windowsBridge.getCandidates();
-    String winComposition = windowsBridge.getComposition();
+        List<String> winCandidates = windowsBridge.getCandidates();
+        String winComposition = windowsBridge.getComposition();
 
-    if (winCandidates.isEmpty() && winComposition.isEmpty()) {
-        hud.clearInput();
-    } else if (!winCandidates.isEmpty()) {
-        hud.updateCandidates(winCandidates, winComposition);
-    } else if (!winComposition.isEmpty()) {
-        hud.updateCandidates(List.of(), winComposition);
+        if (winCandidates.isEmpty() && winComposition.isEmpty()) {
+            hud.clearInput();
+        } else if (!winCandidates.isEmpty()) {
+            hud.updateCandidates(winCandidates, winComposition);
+        } else if (!winComposition.isEmpty()) {
+            List<String> builtInCandidates = PinyinDictionary.getSuggestions(winComposition);
+            if (!builtInCandidates.isEmpty()) {
+                hud.updateCandidates(builtInCandidates, winComposition);
+            } else {
+                hud.updateCandidates(List.of(), winComposition);
+            }
+        }
     }
-}
 
     public boolean isChineseMode() {
         if (windowsBridge != null) {
@@ -200,6 +206,31 @@ public boolean inputChar(char c) {
             return selected;
         }
         return null;
+    }
+
+    private boolean testModeActive = false;
+
+    public void showTestCandidates() {
+        if (testModeActive) {
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] Hiding test candidates");
+            hud.clearInput();
+            testModeActive = false;
+            return;
+        }
+
+        ChineseIMEInitializer.LOGGER.info("[ChineseIME] Showing test candidates");
+        List<String> testCands = PinyinDictionary.getCandidatesForTest();
+        if (testCands.isEmpty()) {
+            testCands = java.util.Arrays.asList("测试词语1", "测试词语2", "测试词语3", "测试词语4", "测试词语5", "测试词语6", "测试词语7", "测试词语8", "测试词语9");
+        }
+        List<String> displayCands = testCands.subList(0, Math.min(9, testCands.size()));
+        hud.updateCandidates(displayCands, "测试");
+        testModeActive = true;
+    }
+
+    public void clearTestCandidates() {
+        hud.clearInput();
+        testModeActive = false;
     }
 
     public enum OS {
