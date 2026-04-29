@@ -11,7 +11,6 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
-import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.ChatScreen;
 import org.lwjgl.glfw.GLFW;
@@ -39,39 +38,9 @@ public class ChineseIMEInitializer implements ClientModInitializer {
         this.statusIndicator = new ImeStatusIndicator();
         this.imeManager = new PlatformIMEManager(this.config, this.candidateHud);
         this.keyBindingManager = new KeyBindingManager(this.config, this.imeManager);
-        this.keyBindingManager.register();
+this.keyBindingManager.register();
 
-HudRenderCallback.EVENT.register((ctx, tickDelta) -> {
-        MinecraftClient mc = MinecraftClient.getInstance();
-        boolean inChatScreen = mc != null && mc.currentScreen instanceof ChatScreen;
-        this.statusIndicator.setInChatScreen(inChatScreen);
-
-        boolean isTyping = this.imeManager.hasInput();
-        boolean layoutChanged = this.imeManager.checkAndClearLayoutChanged();
-        boolean capsLockOn = false;
-        boolean inShiftMode = false;
-        boolean chineseMode = this.config.isChineseMode();
-
-        if (this.imeManager.isWindowsSync()) {
-            Object bridge = this.imeManager.getWindowsBridge();
-            if (bridge instanceof WindowsIMEBridgeNative windowsBridge) {
-                capsLockOn = windowsBridge.isCapsLockOn();
-                inShiftMode = windowsBridge.isInShiftMode();
-                chineseMode = windowsBridge.isChineseMode();
-                LOGGER.debug("[ChineseIME] HUD: chat={}, capsLock={}, shift={}, chinese={}, detected={}",
-                    inChatScreen, capsLockOn, inShiftMode, chineseMode, windowsBridge.getDetectedInputMode());
-            }
-        }
-
-        InputMode detectedMode = this.imeManager.getDetectedInputMode();
-        this.statusIndicator.update(chineseMode, detectedMode, capsLockOn, inShiftMode, true, layoutChanged);
-
-        LOGGER.info("[ChineseIME] Rendering HUD. Chat={}, Window={}x{}", inChatScreen, mc.getWindow().getWidth(), mc.getWindow().getHeight());
-        this.candidateHud.render(ctx);
-        this.statusIndicator.render(ctx);
-    });
-
-ClientTickEvents.END_CLIENT_TICK.register(client -> {
+    ClientTickEvents.END_CLIENT_TICK.register(client -> {
         this.keyBindingManager.tick();
         this.imeManager.tick();
 
@@ -129,5 +98,33 @@ ClientTickEvents.END_CLIENT_TICK.register(client -> {
 
     public boolean hasLayoutChanged() {
         return this.imeManager.hasLayoutChanged();
+    }
+
+    public void renderHUD(net.minecraft.client.gui.DrawContext ctx) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc == null) return;
+
+        boolean inChatScreen = mc.currentScreen instanceof ChatScreen;
+        this.statusIndicator.setInChatScreen(inChatScreen);
+
+        boolean layoutChanged = this.imeManager.checkAndClearLayoutChanged();
+        boolean capsLockOn = false;
+        boolean inShiftMode = false;
+        boolean chineseMode = this.config.isChineseMode();
+
+        if (this.imeManager.isWindowsSync()) {
+            Object bridge = this.imeManager.getWindowsBridge();
+            if (bridge instanceof WindowsIMEBridgeNative windowsBridge) {
+                capsLockOn = windowsBridge.isCapsLockOn();
+                inShiftMode = windowsBridge.isInShiftMode();
+                chineseMode = windowsBridge.isChineseMode();
+            }
+        }
+
+        InputMode detectedMode = this.imeManager.getDetectedInputMode();
+        this.statusIndicator.update(chineseMode, detectedMode, capsLockOn, inShiftMode, true, layoutChanged);
+
+        this.candidateHud.render(ctx);
+        this.statusIndicator.render(ctx);
     }
 }

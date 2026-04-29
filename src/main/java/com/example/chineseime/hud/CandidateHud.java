@@ -20,16 +20,18 @@ public class CandidateHud {
     private static final int BG = 0x80000000;
     private static final int BORDER_COLOR = 0xFF4466AA;
     private static final int SEL_BAR = 0xFF4488FF;
-    private static final int SEL_BG = 0x664466AA;
+    private static final int SEL_BG = 0x80505050;
     private static final int TEXT_COLOR = 0xFFFFFFFF;
     private static final int NUM_COLOR = 0xFF888888;
     private static final int INPUT_COLOR = 0xFFB991FF;
     private static final int ARROW_COLOR = 0xFFAAAAAA;
-    private static final int CHAR_WIDTH = 70;
-    private static final int EXTRA_WIDTH = 20;
-    private static final int HUD_HEIGHT = 40;
-    private static final int MAX_WIDTH = 960;
-    private static final int DEFAULT_WIDTH = 630;
+
+    private static final int HUD_HEIGHT_PX = 40;
+    private static final int CHAR_WIDTH_PX = 70;
+    private static final int CHAR_EXTRA_PX = 20;
+    private static final int DEFAULT_WIDTH_PX = 630;
+    private static final int MAX_WIDTH_PX = 960;
+    private static final int MARGIN_PX = 8;
 
     public void updateCandidates(List<String> candidates, String composition) {
         this.candidates = candidates != null ? new ArrayList<>(candidates) : new ArrayList<>();
@@ -134,7 +136,7 @@ public class CandidateHud {
         int my = (int) mouseY;
 
         if (my >= this.y && my <= this.y + this.height) {
-            int arrowAreaW = 24;
+            int arrowAreaW = 30;
             if (this.hasPrevPage() && mx >= this.x + 4 && mx <= this.x + 4 + arrowAreaW) {
                 this.prevPage();
                 return true;
@@ -149,8 +151,12 @@ public class CandidateHud {
     public void render(DrawContext ctx) {
         MinecraftClient mc = MinecraftClient.getInstance();
         TextRenderer font = mc.textRenderer;
-        int scaledH = mc.getWindow().getScaledHeight();
+
         int scaledW = mc.getWindow().getScaledWidth();
+        int scaledH = mc.getWindow().getScaledHeight();
+        int actualW = mc.getWindow().getWidth();
+        int actualH = mc.getWindow().getHeight();
+        float scaleFactor = (float) actualW / scaledW;
 
         List<String> displayCandidates = this.candidates;
         if (displayCandidates.isEmpty()) {
@@ -158,28 +164,28 @@ public class CandidateHud {
             this.composition = "测试";
         }
 
-        int h = HUD_HEIGHT;
-        int pad = 6;
-        int arrowW = 24;
+        int h = (int) (HUD_HEIGHT_PX * scaleFactor);
+        int pad = (int) (6 * scaleFactor);
+        int arrowW = (int) (24 * scaleFactor);
+        int charW = (int) (CHAR_WIDTH_PX * scaleFactor);
+        int charExtra = (int) (CHAR_EXTRA_PX * scaleFactor);
 
-        int contentW = displayCandidates.size() * (CHAR_WIDTH + EXTRA_WIDTH);
-        contentW = Math.min(contentW, MAX_WIDTH);
-        contentW = Math.max(contentW, DEFAULT_WIDTH);
+        int inputW = (int) (font.getWidth(this.composition) * scaleFactor);
+        int inputAreaW = (!this.composition.isEmpty()) ? inputW + pad * 2 : 0;
 
-        int inputW = font.getWidth(this.composition);
-        int inputAreaW = (!this.composition.isEmpty()) ? inputW + 20 : 0;
+        int defaultW = (int) (DEFAULT_WIDTH_PX * scaleFactor);
+        int maxW = (int) (MAX_WIDTH_PX * scaleFactor);
+
+        int contentW = Math.min(displayCandidates.size() * (charW + charExtra), maxW);
+        contentW = Math.max(contentW, defaultW);
 
         this.width = contentW + pad * 2 + inputAreaW;
-        this.width = Math.min(this.width, MAX_WIDTH + 100);
-        this.width = Math.max(this.width, DEFAULT_WIDTH);
+        this.width = Math.min(this.width, maxW + (int) (100 * scaleFactor));
+        this.width = Math.max(this.width, defaultW);
 
-        this.x = 8;
-        this.y = scaledH - h - 8;
+        this.x = (int) (MARGIN_PX * scaleFactor);
+        this.y = actualH - h - (int) (MARGIN_PX * scaleFactor);
 
-        int maxCharsOnPage = (int) ((this.width - pad * 2 - inputAreaW - (this.hasPrevPage() ? arrowW : 0) - (this.hasNextPage() ? arrowW : 0)) / (CHAR_WIDTH + EXTRA_WIDTH));
-        if (maxCharsOnPage <= 0) maxCharsOnPage = 9;
-
-        int actualPerPage = Math.min(this.perPage, displayCandidates.size());
         this.height = h;
 
         ctx.fill(this.x, this.y, this.x + this.width, this.y + h, BG);
@@ -192,40 +198,43 @@ public class CandidateHud {
         boolean hasNext = this.page < totalPages - 1;
 
         if (hasPrev) {
-            ctx.drawText(font, "<", cx, this.y + (h - 8) / 2, ARROW_COLOR, false);
+            ctx.drawText(font, "<", cx, this.y + (h - (int) (16 * scaleFactor)) / 2, ARROW_COLOR, false);
             cx += arrowW;
         }
 
+        if (!this.composition.isEmpty()) {
+            ctx.drawText(font, this.composition, cx, this.y + (h - (int) (16 * scaleFactor)) / 2, INPUT_COLOR, false);
+            cx += inputW + pad;
+        }
+
         int start = this.page * this.perPage;
-        int end = Math.min(start + actualPerPage, displayCandidates.size());
+        int actualPerPage = Math.min(this.perPage, displayCandidates.size());
 
         int availableW = this.width - pad - (hasPrev ? arrowW : 0) - (hasNext ? arrowW : 0) - inputAreaW;
-        int itemW = CHAR_WIDTH + EXTRA_WIDTH;
+        int itemW = charW + charExtra;
         int maxItems = Math.min(actualPerPage, availableW / itemW);
 
-        end = Math.min(start + maxItems, displayCandidates.size());
+        int end = Math.min(start + maxItems, displayCandidates.size());
+
+        int textY = this.y + (h - (int) (16 * scaleFactor)) / 2;
+        int textPadLeft = (int) (8 * scaleFactor);
 
         for (int i = start; i < end; ++i) {
             String cand = displayCandidates.get(i);
             boolean isSelected = i == this.selected;
 
             if (isSelected) {
-                ctx.fill(cx, this.y + 2, cx + CHAR_WIDTH + EXTRA_WIDTH, this.y + h - 2, SEL_BG);
+                ctx.fill(cx, this.y + 2, cx + charW + charExtra, this.y + h - 2, SEL_BG);
                 ctx.fill(cx, this.y + 2, cx + 3, this.y + h - 2, SEL_BAR);
             }
 
-            ctx.drawText(font, cand, cx + 8, this.y + (h - 8) / 2, TEXT_COLOR, false);
-            cx += CHAR_WIDTH + EXTRA_WIDTH;
+            ctx.drawText(font, cand, cx + textPadLeft, textY, TEXT_COLOR, false);
+            cx += charW + charExtra;
         }
 
         if (hasNext) {
             cx = this.x + this.width - pad - arrowW;
-            ctx.drawText(font, ">", cx, this.y + (h - 8) / 2, ARROW_COLOR, false);
-        }
-
-        if (!this.composition.isEmpty()) {
-            int inputX = this.x + this.width - pad - inputAreaW;
-            ctx.drawText(font, this.composition, inputX + 4, this.y + (h - 8) / 2, INPUT_COLOR, false);
+            ctx.drawText(font, ">", cx, textY, ARROW_COLOR, false);
         }
     }
 
