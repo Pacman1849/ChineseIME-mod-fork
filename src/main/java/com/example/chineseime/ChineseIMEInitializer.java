@@ -63,15 +63,12 @@ HudRenderCallback.EVENT.register((ctx, tickDelta) -> {
         }
     }
 
-    InputMode detectedMode = this.imeManager.getDetectedInputMode();
-    this.statusIndicator.update(chineseMode, detectedMode, capsLockOn, inShiftMode, isTyping, layoutChanged);
+InputMode detectedMode = this.imeManager.getDetectedInputMode();
+        this.statusIndicator.update(chineseMode, detectedMode, capsLockOn, inShiftMode, true, layoutChanged);
 
-    if (isTyping) {
         this.candidateHud.render(ctx);
-    }
-
-    this.statusIndicator.render(ctx);
-});
+        this.statusIndicator.render(ctx);
+    });
 
 ClientTickEvents.END_CLIENT_TICK.register(client -> {
         this.keyBindingManager.tick();

@@ -173,8 +173,8 @@ public class CandidateHud {
         this.width = Math.min(this.width, MAX_WIDTH + 100);
         this.width = Math.max(this.width, DEFAULT_WIDTH);
 
-        this.x = 4;
-        this.y = screenH - h - 16;
+        this.x = 8;
+        this.y = screenH - h - 48;
 
         int maxCharsOnPage = (int) ((this.width - pad * 2 - inputAreaW - (this.hasPrevPage() ? arrowW : 0) - (this.hasNextPage() ? arrowW : 0)) / (CHAR_WIDTH + EXTRA_WIDTH));
         if (maxCharsOnPage <= 0) maxCharsOnPage = 9;
