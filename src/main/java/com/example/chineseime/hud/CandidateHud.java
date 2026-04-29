@@ -149,8 +149,8 @@ public class CandidateHud {
     public void render(DrawContext ctx) {
         MinecraftClient mc = MinecraftClient.getInstance();
         TextRenderer font = mc.textRenderer;
-        int screenH = mc.getWindow().getHeight();
         int scaledH = mc.getWindow().getScaledHeight();
+        int scaledW = mc.getWindow().getScaledWidth();
 
         List<String> displayCandidates = this.candidates;
         if (displayCandidates.isEmpty()) {
@@ -174,7 +174,7 @@ public class CandidateHud {
         this.width = Math.max(this.width, DEFAULT_WIDTH);
 
         this.x = 8;
-        this.y = screenH - h - 48;
+        this.y = scaledH - h - 8;
 
         int maxCharsOnPage = (int) ((this.width - pad * 2 - inputAreaW - (this.hasPrevPage() ? arrowW : 0) - (this.hasNextPage() ? arrowW : 0)) / (CHAR_WIDTH + EXTRA_WIDTH));
         if (maxCharsOnPage <= 0) maxCharsOnPage = 9;
