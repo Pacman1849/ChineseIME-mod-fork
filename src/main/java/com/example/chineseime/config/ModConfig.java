@@ -9,6 +9,8 @@ import java.io.Writer;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import net.fabricmc.loader.api.FabricLoader;
 import org.lwjgl.glfw.GLFW;
 
@@ -26,6 +28,8 @@ private transient boolean windowsLocked;
     private int toggleImeKey;
     private int toggleChineseModeKey;
     private int toggleScriptKey;
+    private List<Integer> toggleImeKeys;
+    private List<Integer> toggleChineseModeKeys;
 
     public ModConfig() {
         this.inputMode = InputMode.PINYIN;
@@ -39,6 +43,8 @@ private transient boolean windowsLocked;
         this.toggleImeKey = -1;
         this.toggleChineseModeKey = -1;
         this.toggleScriptKey = -1;
+        this.toggleImeKeys = new ArrayList<>();
+        this.toggleChineseModeKeys = new ArrayList<>();
     }
 
    public void lockForWindows() {
@@ -254,6 +260,24 @@ public void clearToggleImeKey() {
 
     public void clearToggleChineseModeKey() {
         this.toggleChineseModeKey = -1;
+        this.save();
+    }
+
+    public List<Integer> getToggleImeKeys() {
+        return this.toggleImeKeys != null ? this.toggleImeKeys : new ArrayList<>();
+    }
+
+    public void setToggleImeKeys(List<Integer> keys) {
+        this.toggleImeKeys = keys != null ? new ArrayList<>(keys) : new ArrayList<>();
+        this.save();
+    }
+
+    public List<Integer> getToggleChineseModeKeys() {
+        return this.toggleChineseModeKeys != null ? this.toggleChineseModeKeys : new ArrayList<>();
+    }
+
+    public void setToggleChineseModeKeys(List<Integer> keys) {
+        this.toggleChineseModeKeys = keys != null ? new ArrayList<>(keys) : new ArrayList<>();
         this.save();
     }
 

@@ -17,14 +17,14 @@ public class CandidateHud {
     private int y;
     private int width;
     private int height;
+
     private static final int BG = 0x80000000;
-    private static final int BORDER_COLOR = 0xFF4466AA;
     private static final int SEL_BAR = 0xFF4488FF;
-    private static final int SEL_BG = 0x80505050;
+    private static final int SEL_BG = 0x50505050;
     private static final int TEXT_COLOR = 0xFFFFFFFF;
-    private static final int NUM_COLOR = 0xFF888888;
     private static final int INPUT_COLOR = 0xFFB991FF;
     private static final int ARROW_COLOR = 0xFFAAAAAA;
+    private static final int ARROW_HOVER_COLOR = 0xFFFFFFFF;
 
     private static final int HUD_HEIGHT_PX = 40;
     private static final int CHAR_WIDTH_PX = 70;
@@ -32,12 +32,31 @@ public class CandidateHud {
     private static final int DEFAULT_WIDTH_PX = 630;
     private static final int MAX_WIDTH_PX = 960;
     private static final int MARGIN_PX = 8;
+    private static final int SEL_BAR_WIDTH_PX = 3;
+
+    private boolean prevArrowHovered = false;
+    private boolean nextArrowHovered = false;
+    private boolean pageArrowClicked = false;
 
     public void updateCandidates(List<String> candidates, String composition) {
         this.candidates = candidates != null ? new ArrayList<>(candidates) : new ArrayList<>();
         this.composition = composition != null ? composition : "";
         this.selected = 0;
         this.page = 0;
+        this.visible = !this.candidates.isEmpty();
+    }
+
+    public void updateCandidatesKeepSelection(List<String> candidates, String composition, int selectedIndex, int page) {
+        this.candidates = candidates != null ? new ArrayList<>(candidates) : new ArrayList<>();
+        this.composition = composition != null ? composition : "";
+        int totalPages = this.candidates.isEmpty() ? 1 : (this.candidates.size() + this.perPage - 1) / this.perPage;
+        this.page = Math.max(0, Math.min(page, totalPages - 1));
+        this.selected = this.page * this.perPage + Math.max(0, Math.min(selectedIndex % this.perPage, this.candidates.size() - 1));
+        if (this.selected >= this.candidates.size()) {
+            this.selected = Math.max(0, this.candidates.size() - 1);
+            int newPage = this.selected / this.perPage;
+            if (newPage != this.page) this.page = newPage;
+        }
         this.visible = !this.candidates.isEmpty();
     }
 
@@ -51,7 +70,6 @@ public class CandidateHud {
 
     public void selectPrevious() {
         if (this.candidates.isEmpty()) return;
-
         if (this.selected > 0) {
             this.selected--;
             int newPage = this.selected / this.perPage;
@@ -63,7 +81,6 @@ public class CandidateHud {
 
     public void selectNext() {
         if (this.candidates.isEmpty()) return;
-
         if (this.selected < this.candidates.size() - 1) {
             this.selected++;
             int newPage = this.selected / this.perPage;
@@ -84,8 +101,8 @@ public class CandidateHud {
     }
 
     public void nextPage() {
-        int maxPage = (this.candidates.size() - 1) / this.perPage;
-        if (this.page < maxPage) {
+        int totalPages = (this.candidates.size() + this.perPage - 1) / this.perPage;
+        if (this.page < totalPages - 1) {
             this.page++;
             this.selected = this.page * this.perPage;
             if (this.selected >= this.candidates.size()) {
@@ -99,7 +116,7 @@ public class CandidateHud {
     }
 
     public boolean isVisible() {
-        return true;
+        return this.visible;
     }
 
     public int getSelectedIndex() {
@@ -127,7 +144,7 @@ public class CandidateHud {
     }
 
     public boolean hasNextPage() {
-        return (this.page + 1) * this.perPage < this.candidates.size();
+        return this.page < getTotalPages() - 1;
     }
 
     public boolean handleClick(double mouseX, double mouseY) {
@@ -135,20 +152,79 @@ public class CandidateHud {
         int mx = (int) mouseX;
         int my = (int) mouseY;
 
-        if (my >= this.y && my <= this.y + this.height) {
-            int arrowAreaW = 30;
-            if (this.hasPrevPage() && mx >= this.x + 4 && mx <= this.x + 4 + arrowAreaW) {
-                this.prevPage();
-                return true;
-            } else if (this.hasNextPage() && mx >= this.x + this.width - 4 - arrowAreaW && mx <= this.x + this.width - 4) {
-                this.nextPage();
+        if (my < this.y || my > this.y + this.height) return false;
+
+        MinecraftClient mc = MinecraftClient.getInstance();
+        TextRenderer font = mc.textRenderer;
+        int scaledW = mc.getWindow().getScaledWidth();
+        int actualW = mc.getWindow().getWidth();
+        float scale = (float) actualW / scaledW;
+        int pad = (int) (6 * scale);
+        int arrowW = (int) (24 * scale);
+        int itemW = (int) (CHAR_WIDTH_PX + CHAR_EXTRA_PX);
+
+        boolean hasPrev = hasPrevPage();
+        boolean hasNext = hasNextPage();
+        int cx = this.x + pad;
+        if (hasPrev) cx += arrowW;
+
+        if (hasPrev && mx >= this.x + pad && mx < this.x + pad + arrowW) {
+            this.pageArrowClicked = true;
+            this.prevPage();
+            return true;
+        }
+
+        if (hasNext && mx >= this.x + this.width - pad - arrowW && mx <= this.x + this.width - pad) {
+            this.pageArrowClicked = true;
+            this.nextPage();
+            return true;
+        }
+
+        int start = this.page * this.perPage;
+        int end = Math.min(start + this.perPage, this.candidates.size());
+        for (int i = start; i < end; i++) {
+            int itemX = cx + (i - start) * itemW;
+            if (mx >= itemX && mx < itemX + itemW) {
+                this.selected = i;
                 return true;
             }
         }
+
         return false;
     }
 
+    public void onMouseMove(double mouseX, double mouseY) {
+        if (!this.visible) {
+            this.prevArrowHovered = false;
+            this.nextArrowHovered = false;
+            return;
+        }
+        int mx = (int) mouseX;
+        int my = (int) mouseY;
+
+        if (my < this.y || my > this.y + this.height) {
+            this.prevArrowHovered = false;
+            this.nextArrowHovered = false;
+            return;
+        }
+
+        MinecraftClient mc = MinecraftClient.getInstance();
+        int scaledW = mc.getWindow().getScaledWidth();
+        int actualW = mc.getWindow().getWidth();
+        float scale = (float) actualW / scaledW;
+        int pad = (int) (6 * scale);
+        int arrowW = (int) (24 * scale);
+
+        this.prevArrowHovered = hasPrevPage() && mx >= this.x + pad && mx < this.x + pad + arrowW;
+        this.nextArrowHovered = hasNextPage() && mx >= this.x + this.width - pad - arrowW && mx <= this.x + this.width - pad;
+    }
+
     public void render(DrawContext ctx) {
+        if (!this.visible) {
+            this.pageArrowClicked = false;
+            return;
+        }
+
         MinecraftClient mc = MinecraftClient.getInstance();
         TextRenderer font = mc.textRenderer;
 
@@ -156,85 +232,79 @@ public class CandidateHud {
         int scaledH = mc.getWindow().getScaledHeight();
         int actualW = mc.getWindow().getWidth();
         int actualH = mc.getWindow().getHeight();
-        float scaleFactor = (float) actualW / scaledW;
+        float scale = (float) actualW / scaledW;
 
         List<String> displayCandidates = this.candidates;
-        if (displayCandidates.isEmpty()) {
-            displayCandidates = java.util.Arrays.asList("测试词语1", "测试词语2", "测试词语3", "测试词语4", "测试词语5", "测试词语6", "测试词语7", "测试词语8", "测试词语9");
-            this.composition = "测试";
+
+        int h = (int) (HUD_HEIGHT_PX * scale);
+        int pad = (int) (6 * scale);
+        int arrowW = (int) (24 * scale);
+        int itemW = (int) (CHAR_WIDTH_PX + CHAR_EXTRA_PX);
+
+        boolean hasPrev = hasPrevPage();
+        boolean hasNext = hasNextPage();
+
+        int start = this.page * this.perPage;
+        int end = Math.min(start + this.perPage, displayCandidates.size());
+        int visibleCount = end - start;
+
+        int candidatesW = visibleCount * itemW;
+        if (hasPrev) candidatesW += arrowW;
+        if (hasNext) candidatesW += arrowW;
+
+        int inputW = 0;
+        int inputAreaW = 0;
+        if (!this.composition.isEmpty()) {
+            inputW = font.getWidth(this.composition) + pad * 2;
+            inputAreaW = inputW + pad;
         }
 
-        int h = (int) (HUD_HEIGHT_PX * scaleFactor);
-        int pad = (int) (6 * scaleFactor);
-        int arrowW = (int) (24 * scaleFactor);
-        int charW = (int) (CHAR_WIDTH_PX * scaleFactor);
-        int charExtra = (int) (CHAR_EXTRA_PX * scaleFactor);
+        int contentW = candidatesW + inputAreaW;
+        contentW = Math.max(contentW, (int) (DEFAULT_WIDTH_PX * scale));
+        contentW = Math.min(contentW, (int) (MAX_WIDTH_PX * scale));
 
-        int inputW = (int) (font.getWidth(this.composition) * scaleFactor);
-        int inputAreaW = (!this.composition.isEmpty()) ? inputW + pad * 2 : 0;
-
-        int defaultW = (int) (DEFAULT_WIDTH_PX * scaleFactor);
-        int maxW = (int) (MAX_WIDTH_PX * scaleFactor);
-
-        int contentW = Math.min(displayCandidates.size() * (charW + charExtra), maxW);
-        contentW = Math.max(contentW, defaultW);
-
-        this.width = contentW + pad * 2 + inputAreaW;
-        this.width = Math.min(this.width, maxW + (int) (100 * scaleFactor));
-        this.width = Math.max(this.width, defaultW);
-
-        this.x = (int) (MARGIN_PX * scaleFactor);
-        this.y = actualH - h - (int) (MARGIN_PX * scaleFactor);
-
+        this.width = contentW + pad * 2;
+        this.x = (int) (MARGIN_PX * scale);
+        this.y = actualH - h - (int) (MARGIN_PX * scale);
         this.height = h;
 
         ctx.fill(this.x, this.y, this.x + this.width, this.y + h, BG);
-        ctx.drawBorder(this.x, this.y, this.width, h, BORDER_COLOR);
 
         int cx = this.x + pad;
 
-        int totalPages = (displayCandidates.size() + this.perPage - 1) / this.perPage;
-        boolean hasPrev = this.page > 0;
-        boolean hasNext = this.page < totalPages - 1;
-
         if (hasPrev) {
-            ctx.drawText(font, "<", cx, this.y + (h - (int) (16 * scaleFactor)) / 2, ARROW_COLOR, false);
+            int arrowColor = this.prevArrowHovered ? ARROW_HOVER_COLOR : ARROW_COLOR;
+            ctx.drawText(font, "<", cx + (arrowW - font.getWidth("<")) / 2,
+                this.y + (h - font.fontHeight) / 2, arrowColor, false);
             cx += arrowW;
         }
 
-        if (!this.composition.isEmpty()) {
-            ctx.drawText(font, this.composition, cx, this.y + (h - (int) (16 * scaleFactor)) / 2, INPUT_COLOR, false);
-            cx += inputW + pad;
-        }
-
-        int start = this.page * this.perPage;
-        int actualPerPage = Math.min(this.perPage, displayCandidates.size());
-
-        int availableW = this.width - pad - (hasPrev ? arrowW : 0) - (hasNext ? arrowW : 0) - inputAreaW;
-        int itemW = charW + charExtra;
-        int maxItems = Math.min(actualPerPage, availableW / itemW);
-
-        int end = Math.min(start + maxItems, displayCandidates.size());
-
-        int textY = this.y + (h - (int) (16 * scaleFactor)) / 2;
-        int textPadLeft = (int) (8 * scaleFactor);
-
-        for (int i = start; i < end; ++i) {
+        for (int i = start; i < end; i++) {
             String cand = displayCandidates.get(i);
             boolean isSelected = i == this.selected;
 
             if (isSelected) {
-                ctx.fill(cx, this.y + 2, cx + charW + charExtra, this.y + h - 2, SEL_BG);
-                ctx.fill(cx, this.y + 2, cx + 3, this.y + h - 2, SEL_BAR);
+                ctx.fill(cx, this.y + 2, cx + itemW, this.y + h - 2, SEL_BG);
+                ctx.fill(cx, this.y + 2, cx + SEL_BAR_WIDTH_PX, this.y + h - 2, SEL_BAR);
             }
 
-            ctx.drawText(font, cand, cx + textPadLeft, textY, TEXT_COLOR, false);
-            cx += charW + charExtra;
+            ctx.drawText(font, cand,
+                cx + SEL_BAR_WIDTH_PX + 4,
+                this.y + (h - font.fontHeight) / 2,
+                TEXT_COLOR, false);
+            cx += itemW;
         }
 
         if (hasNext) {
-            cx = this.x + this.width - pad - arrowW;
-            ctx.drawText(font, ">", cx, textY, ARROW_COLOR, false);
+            int arrowColor = this.nextArrowHovered ? ARROW_HOVER_COLOR : ARROW_COLOR;
+            ctx.drawText(font, ">", cx + (arrowW - font.getWidth(">")) / 2,
+                this.y + (h - font.fontHeight) / 2, arrowColor, false);
+            cx += arrowW;
+        }
+
+        if (!this.composition.isEmpty()) {
+            int inputX = this.x + this.width - pad - inputW;
+            ctx.drawText(font, this.composition, inputX, this.y + (h - font.fontHeight) / 2, INPUT_COLOR, false);
         }
     }
 

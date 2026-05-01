@@ -12,8 +12,11 @@ import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
+import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
+import net.fabricmc.fabric.api.client.screen.v1.ScreenMouseEvents;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.ChatScreen;
+import net.minecraft.client.gui.screen.Screen;
 import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,6 +32,10 @@ public class ChineseIMEInitializer implements ClientModInitializer {
     private PlatformIMEManager imeManager;
     private KeyBindingManager keyBindingManager;
     private boolean ctrlShiftTPressed = false;
+    private boolean prevLeftPressed = false;
+    private boolean prevRightPressed = false;
+    private boolean prevUpPressed = false;
+    private boolean prevDownPressed = false;
 
     @Override
     public void onInitializeClient() {
@@ -43,7 +50,7 @@ public class ChineseIMEInitializer implements ClientModInitializer {
 
         HudRenderCallback.EVENT.register((ctx, tickDelta) -> {
             MinecraftClient mc = MinecraftClient.getInstance();
-            if (mc == null || mc.currentScreen == null) return;
+            if (mc == null) return;
 
             boolean inChatScreen = mc.currentScreen instanceof ChatScreen;
             this.statusIndicator.setInChatScreen(inChatScreen);
@@ -59,6 +66,7 @@ public class ChineseIMEInitializer implements ClientModInitializer {
                     capsLockOn = windowsBridge.isCapsLockOn();
                     inShiftMode = windowsBridge.isInShiftMode();
                     chineseMode = windowsBridge.isChineseMode();
+                    this.statusIndicator.setDllInitialized(true);
                 }
             }
 
@@ -80,12 +88,17 @@ public class ChineseIMEInitializer implements ClientModInitializer {
             boolean downPressed = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_DOWN) == GLFW.GLFW_PRESS;
 
             if (this.imeManager.hasInput()) {
-                if (leftPressed || upPressed) {
+                if ((leftPressed && !prevLeftPressed) || (upPressed && !prevUpPressed)) {
                     this.imeManager.selectPrev();
-                } else if (rightPressed || downPressed) {
+                } else if ((rightPressed && !prevRightPressed) || (downPressed && !prevDownPressed)) {
                     this.imeManager.selectNext();
                 }
             }
+
+            prevLeftPressed = leftPressed;
+            prevRightPressed = rightPressed;
+            prevUpPressed = upPressed;
+            prevDownPressed = downPressed;
 
             boolean ctrl = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_LEFT_CONTROL) == GLFW.GLFW_PRESS ||
                     GLFW.glfwGetKey(window, GLFW.GLFW_KEY_RIGHT_CONTROL) == GLFW.GLFW_PRESS;

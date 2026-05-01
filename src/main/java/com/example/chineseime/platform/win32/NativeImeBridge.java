@@ -2,6 +2,8 @@ package com.example.chineseime.platform.win32;
 
 import com.example.chineseime.ChineseIMEInitializer;
 import com.example.chineseime.engine.InputMode;
+import com.sun.jna.Callback;
+import com.sun.jna.Memory;
 import com.sun.jna.Native;
 import com.sun.jna.Pointer;
 import com.sun.jna.WString;
@@ -16,6 +18,22 @@ import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 public class NativeImeBridge {
+
+    public interface CandidateUpdateCallback extends Callback {
+        void invoke(WString composition, Pointer candidates, int count, int selectedIndex);
+    }
+
+    public interface LayoutChangeCallback extends Callback {
+        void invoke(int inputMethodType);
+    }
+
+    public interface ModeChangeCallback extends Callback {
+        void invoke(int chineseMode);
+    }
+
+    public interface KeyboardStateCallback extends Callback {
+        void invoke(int capsLockOn, int inShiftMode);
+    }
     public static final int IME_TYPE_UNKNOWN = 0;
     public static final int IME_TYPE_ENGLISH = 1;
     public static final int IME_TYPE_PINYIN = 2;
@@ -30,8 +48,25 @@ public class NativeImeBridge {
     private static boolean loadAttempted = false;
     private static final Object LOAD_LOCK = new Object();
 
+    private static CandidateUpdateCallback sCandidateCallback = null;
+    private static LayoutChangeCallback sLayoutCallback = null;
+    private static ModeChangeCallback sModeCallback = null;
+    private static KeyboardStateCallback sKeyboardCallback = null;
+
     public static boolean isAvailable() {
         return loaded && INSTANCE != null;
+    }
+
+    public static void registerCallbacks(CandidateUpdateCallback candidateCallback,
+                                          LayoutChangeCallback layoutCallback,
+                                          ModeChangeCallback modeCallback,
+                                          KeyboardStateCallback keyboardCallback) {
+        if (!isAvailable()) return;
+        sCandidateCallback = candidateCallback;
+        sLayoutCallback = layoutCallback;
+        sModeCallback = modeCallback;
+        sKeyboardCallback = keyboardCallback;
+        INSTANCE.SetCallbacks(candidateCallback, layoutCallback, modeCallback, keyboardCallback);
     }
 
     public static synchronized NativeLibrary getInstance() {
@@ -45,7 +80,10 @@ public class NativeImeBridge {
 private static void loadNative() {
     ChineseIMEInitializer.LOGGER.info("[ChineseIME] Loading native library...");
     try {
-        InputStream dllStream = NativeImeBridge.class.getResourceAsStream("/META-INF/natives/chineseime_native.dll");
+        String osArch = System.getProperty("os.arch");
+        String nativesPath = "/META-INF/natives/" + osArch + "/chineseime_native.dll";
+        ChineseIMEInitializer.LOGGER.info("[ChineseIME] Looking for DLL at: {}", nativesPath);
+        InputStream dllStream = NativeImeBridge.class.getResourceAsStream(nativesPath);
         ChineseIMEInitializer.LOGGER.info("[ChineseIME] DLL stream: {}", dllStream != null ? "found" : "null");
         if (dllStream != null) {
             Path tempDir = Files.createTempDirectory("chineseime_native");
@@ -59,7 +97,7 @@ private static void loadNative() {
             loaded = true;
             ChineseIMEInitializer.LOGGER.info("[ChineseIME] DLL loaded successfully");
         } else {
-            ChineseIMEInitializer.LOGGER.warn("[ChineseIME] DLL not found in JAR, using fallback");
+            ChineseIMEInitializer.LOGGER.warn("[ChineseIME] DLL not found in JAR at {}, using fallback", nativesPath);
             loaded = false;
         }
     } catch (Exception e) {
@@ -112,9 +150,10 @@ private static void loadNative() {
 
     public static String getCompositionString() {
         if (!isAvailable()) return "";
-        char[] buffer = new char[256];
-        int len = INSTANCE.GetCompositionString(buffer, buffer.length);
-        return len <= 0 ? "" : new String(buffer, 0, len);
+        int bufChars = 256;
+        Memory buffer = new Memory(bufChars * 2L);
+        int len = INSTANCE.GetCompositionString(buffer, bufChars);
+        return len <= 0 ? "" : buffer.getWideString(0);
     }
 
     public static int getCandidateCount() {
@@ -123,9 +162,10 @@ private static void loadNative() {
 
     public static String getCandidate(int index) {
         if (!isAvailable()) return "";
-        char[] buffer = new char[64];
-        int len = INSTANCE.GetCandidate(index, buffer, buffer.length);
-        return len <= 0 ? "" : new String(buffer, 0, len);
+        int bufChars = 64;
+        Memory buffer = new Memory(bufChars * 2L);
+        int len = INSTANCE.GetCandidate(index, buffer, bufChars);
+        return len <= 0 ? "" : buffer.getWideString(0);
     }
 
     public static List<String> getCandidates() {
@@ -166,6 +206,10 @@ private static void loadNative() {
 
     public static boolean getCapsLockState() {
         return isAvailable() && INSTANCE.GetCapsLockState() == 1;
+    }
+
+    public static boolean isKeyPressed(int vKey) {
+        return isAvailable() && INSTANCE.GetKeyboardStateForPolling(vKey) == 1;
     }
 
     public static int getInputMethodType() {
@@ -216,9 +260,9 @@ private static void loadNative() {
         int StartTsfListen();
         void StopTsfListen();
         int IsTsfListening();
-        int GetCompositionString(char[] buffer, int bufferSize);
+        int GetCompositionString(Pointer buffer, int bufferSize);
         int GetCandidateCount();
-        int GetCandidate(int index, char[] buffer, int bufferSize);
+        int GetCandidate(int index, Pointer buffer, int bufferSize);
         int GetSelectedCandidateIndex();
         int GetImeOpenStatus();
         int GetTsfChineseMode();
@@ -226,8 +270,13 @@ private static void loadNative() {
         int GetInputMethodType();
         int GetShiftMode();
         int GetCapsLockState();
+        int GetKeyboardStateForPolling(int vKey);
         void RefreshImeState();
         void FreeBuffer(Pointer ptr);
         long GetKeyboardLayoutHKL();
+        void SetCallbacks(CandidateUpdateCallback candidateUpdate,
+                          LayoutChangeCallback layoutChange,
+                          ModeChangeCallback modeChange,
+                          KeyboardStateCallback keyboardState);
     }
 }

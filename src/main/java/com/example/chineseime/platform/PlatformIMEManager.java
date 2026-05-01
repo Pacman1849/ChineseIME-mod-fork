@@ -26,7 +26,7 @@ public class PlatformIMEManager {
 private void initWindowsIME() {
     try {
         ChineseIMEInitializer.LOGGER.info("[ChineseIME] Initializing Windows IME Bridge");
-        windowsBridge = new WindowsIMEBridgeNative();
+        windowsBridge = new WindowsIMEBridgeNative(hud);
         if (windowsBridge.initialize()) {
             syncEnabled = true;
             ChineseIMEInitializer.LOGGER.info("[ChineseIME] Windows IME Bridge initialized, syncEnabled=true");
@@ -43,40 +43,11 @@ private void initWindowsIME() {
 public void tick() {
     if (windowsBridge != null && syncEnabled) {
         windowsBridge.update();
-        syncFromWindows();
-        ChineseIMEInitializer.LOGGER.debug("[ChineseIME] tick: imeOpen={}, chineseMode={}, capsLock={}, shiftMode={}, detected={}",
-            windowsBridge.isImeOpen(), windowsBridge.isChineseMode(),
-            windowsBridge.isCapsLockOn(), windowsBridge.isInShiftMode(),
-            windowsBridge.getDetectedInputMode());
-    } else {
-        ChineseIMEInitializer.LOGGER.debug("[ChineseIME] tick: windowsBridge={}, syncEnabled={}, platform={}",
-            windowsBridge != null, syncEnabled, getPlatform());
     }
 }
 
 private void syncFromWindows() {
-        if (windowsBridge == null) return;
-
-        if (testModeActive) {
-            return;
-        }
-
-        List<String> winCandidates = windowsBridge.getCandidates();
-        String winComposition = windowsBridge.getComposition();
-
-        if (winCandidates.isEmpty() && winComposition.isEmpty()) {
-            hud.clearInput();
-        } else if (!winCandidates.isEmpty()) {
-            hud.updateCandidates(winCandidates, winComposition);
-        } else if (!winComposition.isEmpty()) {
-            List<String> builtInCandidates = PinyinDictionary.getSuggestions(winComposition);
-            if (!builtInCandidates.isEmpty()) {
-                hud.updateCandidates(builtInCandidates, winComposition);
-            } else {
-                hud.updateCandidates(List.of(), winComposition);
-            }
-        }
-    }
+}
 
     public boolean isChineseMode() {
         if (windowsBridge != null) {
@@ -144,9 +115,10 @@ public void backspace() {
     String current = hud.getInput();
     if (current.length() > 1) {
         String newInput = current.substring(0, current.length() - 1);
-        hud.updateCandidates(List.of(), newInput);
+        List<String> builtIn = PinyinDictionary.getSuggestions(newInput);
+        hud.updateCandidates(builtIn, newInput);
     } else {
-        hud.clearInput();
+        hud.clear();
     }
 }
 
@@ -155,7 +127,8 @@ public boolean inputChar(char c) {
     if (!Character.isLetter(c)) return false;
 
     String current = hud.getInput() + Character.toLowerCase(c);
-    hud.updateCandidates(List.of(), current);
+    List<String> builtIn = PinyinDictionary.getSuggestions(current);
+    hud.updateCandidates(builtIn, current);
     return true;
 }
 

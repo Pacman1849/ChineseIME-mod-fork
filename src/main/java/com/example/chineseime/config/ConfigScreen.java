@@ -57,6 +57,10 @@ public class ConfigScreen extends Screen {
         Item(ItemType type, int y) { this.type = type; this.y = y; }
     }
 
+    private List<Integer> currentCapturedKeys = new ArrayList<>();
+    private long captureStartTime = 0;
+    private static final long CAPTURE_TIMEOUT_MS = 1000;
+
     public ConfigScreen(Screen parent, ModConfig config) {
         super(Text.literal("ChineseIME 设置"));
         this.parent = parent;
@@ -206,7 +210,16 @@ public class ConfigScreen extends Screen {
         ctx.fill(panelX + PADDING, y, panelX + panelW - PADDING, y + ITEM_H, SECTION_BG);
         if (hovered && !waitingForKeybind) ctx.fill(panelX + PADDING, y, panelX + panelW - PADDING, y + ITEM_H, HOVER_BG);
 
-        String shortcut = waitingForKeybind ? "按下按键..." : getKeybindDisplay(config.getToggleImeKey());
+        String shortcut;
+        if (waitingForKeybind) {
+            if (currentCapturedKeys.isEmpty()) {
+                shortcut = "按下按键...";
+            } else {
+                shortcut = getKeybindDisplay(currentCapturedKeys) + "...";
+            }
+        } else {
+            shortcut = getKeybindDisplay(config.getToggleImeKeys());
+        }
         Text label = Text.literal("切换输入法");
         ctx.drawText(this.textRenderer, label, panelX + PADDING + 10, y + 8, waitingForKeybind ? TEXT_HOVER : TEXT_COLOR, false);
 
@@ -223,7 +236,16 @@ public class ConfigScreen extends Screen {
         ctx.fill(panelX + PADDING, y, panelX + panelW - PADDING, y + ITEM_H, SECTION_BG);
         if (hovered && !waitingForKeybind) ctx.fill(panelX + PADDING, y, panelX + panelW - PADDING, y + ITEM_H, HOVER_BG);
 
-        String shortcut = waitingForKeybind ? "按下按键..." : getKeybindDisplay(config.getToggleChineseModeKey());
+        String shortcut;
+        if (waitingForKeybind) {
+            if (currentCapturedKeys.isEmpty()) {
+                shortcut = "按下按键...";
+            } else {
+                shortcut = getKeybindDisplay(currentCapturedKeys) + "...";
+            }
+        } else {
+            shortcut = getKeybindDisplay(config.getToggleChineseModeKeys());
+        }
         Text label = Text.literal("中英文切换");
         ctx.drawText(this.textRenderer, label, panelX + PADDING + 10, y + 8, isWindows ? TEXT_DISABLED : TEXT_COLOR, false);
 
@@ -275,8 +297,46 @@ public class ConfigScreen extends Screen {
         if (keyCode == GLFW.GLFW_KEY_BACKSPACE) return "Backspace";
         if (keyCode == GLFW.GLFW_KEY_SPACE) return "Space";
         if (keyCode >= GLFW.GLFW_KEY_F1 && keyCode <= GLFW.GLFW_KEY_F12) return "F" + (keyCode - GLFW.GLFW_KEY_F1 + 1);
+        if (keyCode == GLFW.GLFW_KEY_ESCAPE) return "Esc";
+        if (keyCode == GLFW.GLFW_KEY_CAPS_LOCK) return "Caps Lock";
+        if (keyCode == GLFW.GLFW_KEY_SCROLL_LOCK) return "Scroll Lock";
+        if (keyCode == GLFW.GLFW_KEY_NUM_LOCK) return "Num Lock";
+        if (keyCode == GLFW.GLFW_KEY_PRINT_SCREEN) return "Print Screen";
+        if (keyCode == GLFW.GLFW_KEY_PAUSE) return "Pause";
+        if (keyCode == GLFW.GLFW_KEY_INSERT) return "Insert";
+        if (keyCode == GLFW.GLFW_KEY_DELETE) return "Delete";
+        if (keyCode == GLFW.GLFW_KEY_HOME) return "Home";
+        if (keyCode == GLFW.GLFW_KEY_END) return "End";
+        if (keyCode == GLFW.GLFW_KEY_PAGE_UP) return "PgUp";
+        if (keyCode == GLFW.GLFW_KEY_PAGE_DOWN) return "PgDn";
+        if (keyCode == GLFW.GLFW_KEY_UP) return "Up";
+        if (keyCode == GLFW.GLFW_KEY_DOWN) return "Down";
+        if (keyCode == GLFW.GLFW_KEY_LEFT) return "Left";
+        if (keyCode == GLFW.GLFW_KEY_RIGHT) return "Right";
+        if (keyCode >= GLFW.GLFW_KEY_KP_0 && keyCode <= GLFW.GLFW_KEY_KP_9) return "Numpad " + (keyCode - GLFW.GLFW_KEY_KP_0);
+        if (keyCode == GLFW.GLFW_KEY_KP_DECIMAL) return "Numpad .";
+        if (keyCode == GLFW.GLFW_KEY_KP_DIVIDE) return "Numpad /";
+        if (keyCode == GLFW.GLFW_KEY_KP_MULTIPLY) return "Numpad *";
+        if (keyCode == GLFW.GLFW_KEY_KP_SUBTRACT) return "Numpad -";
+        if (keyCode == GLFW.GLFW_KEY_KP_ADD) return "Numpad +";
+        if (keyCode == GLFW.GLFW_KEY_KP_ENTER) return "Numpad Enter";
+        if (keyCode == GLFW.GLFW_KEY_MENU) return "Menu";
         String name = GLFW.glfwGetKeyName(keyCode, 0);
         return name != null ? name : "Key" + keyCode;
+    }
+
+    private boolean isModifierKey(int keyCode) {
+        return keyCode == GLFW.GLFW_KEY_LEFT_SHIFT || keyCode == GLFW.GLFW_KEY_RIGHT_SHIFT ||
+               keyCode == GLFW.GLFW_KEY_LEFT_CONTROL || keyCode == GLFW.GLFW_KEY_RIGHT_CONTROL ||
+               keyCode == GLFW.GLFW_KEY_LEFT_ALT || keyCode == GLFW.GLFW_KEY_RIGHT_ALT ||
+               keyCode == GLFW.GLFW_KEY_LEFT_SUPER || keyCode == GLFW.GLFW_KEY_RIGHT_SUPER ||
+               keyCode == GLFW.GLFW_KEY_CAPS_LOCK || keyCode == GLFW.GLFW_KEY_SCROLL_LOCK ||
+               keyCode == GLFW.GLFW_KEY_NUM_LOCK;
+    }
+
+    private boolean isSystemKey(int keyCode) {
+        return keyCode == GLFW.GLFW_KEY_LEFT_SUPER || keyCode == GLFW.GLFW_KEY_RIGHT_SUPER ||
+               keyCode == GLFW.GLFW_KEY_MENU;
     }
 
     private int getHoveredItem(int mx, int my) {
@@ -326,11 +386,11 @@ public class ConfigScreen extends Screen {
 
         int clearBtn = getHoveredClearBtn(mx, my, hoveredIndex);
         if (clearBtn == 0) {
-            config.setToggleImeKey(-1);
+            config.setToggleImeKeys(new ArrayList<>());
             return true;
         }
         if (clearBtn == 1) {
-            config.setToggleChineseModeKey(-1);
+            config.setToggleChineseModeKeys(new ArrayList<>());
             return true;
         }
 
@@ -437,18 +497,35 @@ public class ConfigScreen extends Screen {
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
         if (waitingForKeybind) {
-            waitingForKeybind = false;
-            if (keyCode != GLFW.GLFW_KEY_ESCAPE) {
-                int idx = getHoveredItem(mouseX, mouseY);
-                if (idx >= 0) {
-                    Item item = items.get(idx);
-                    if (item.type == ItemType.SHORTCUT_TOGGLE_IME) {
-                        config.setToggleImeKey(keyCode);
-                    } else if (item.type == ItemType.SHORTCUT_TOGGLE_MODE) {
-                        config.setToggleChineseModeKey(keyCode);
-                    }
+            if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
+                waitingForKeybind = false;
+                currentCapturedKeys.clear();
+                return true;
+            }
+            if (isSystemKey(keyCode)) {
+                return true;
+            }
+            if (isModifierKey(keyCode)) {
+                if (!currentCapturedKeys.contains(keyCode)) {
+                    currentCapturedKeys.add(keyCode);
+                    captureStartTime = System.currentTimeMillis();
+                }
+                return true;
+            }
+            if (!currentCapturedKeys.contains(keyCode)) {
+                currentCapturedKeys.add(keyCode);
+            }
+            int idx = getHoveredItem(mouseX, mouseY);
+            if (idx >= 0) {
+                Item item = items.get(idx);
+                if (item.type == ItemType.SHORTCUT_TOGGLE_IME) {
+                    config.setToggleImeKeys(currentCapturedKeys);
+                } else if (item.type == ItemType.SHORTCUT_TOGGLE_MODE) {
+                    config.setToggleChineseModeKeys(currentCapturedKeys);
                 }
             }
+            waitingForKeybind = false;
+            currentCapturedKeys.clear();
             return true;
         }
         if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
@@ -456,6 +533,16 @@ public class ConfigScreen extends Screen {
             return true;
         }
         return super.keyPressed(keyCode, scanCode, modifiers);
+    }
+
+    private String getKeybindDisplay(List<Integer> keyCodes) {
+        if (keyCodes == null || keyCodes.isEmpty()) return "无";
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < keyCodes.size(); i++) {
+            if (i > 0) sb.append("+");
+            sb.append(getKeybindDisplay(keyCodes.get(i)));
+        }
+        return sb.toString();
     }
 
     @Override

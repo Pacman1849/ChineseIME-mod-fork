@@ -11,10 +11,8 @@ public class ImeStatusIndicator {
     private boolean capsLockOn;
     private boolean inShiftMode;
     private boolean visible;
-    private boolean lastChineseMode;
-    private InputMode lastInputMode;
-    private boolean lastCapsLockOn;
     private boolean inChatScreen;
+    private boolean dllInitialized;
 
     private static final int BG_NORMAL = 0x99000000;
     private static final int BG_CAPS = 0x994466AA;
@@ -22,7 +20,7 @@ public class ImeStatusIndicator {
     private static final int TEXT_COLOR = 0xFFFFFFFF;
     private static final int SHIFT_INDICATOR = 0xFFFFAA00;
 
-    private static final int SIZE = 22;
+    private static final int SIZE = 36;
     private static final int SHIFT_INDICATOR_SIZE = 8;
 
     public ImeStatusIndicator() {
@@ -30,26 +28,36 @@ public class ImeStatusIndicator {
         this.capsLockOn = false;
         this.inShiftMode = false;
         this.visible = false;
-        this.lastChineseMode = true;
-        this.lastInputMode = InputMode.PINYIN;
-        this.lastCapsLockOn = false;
         this.inChatScreen = false;
+        this.dllInitialized = false;
     }
 
     public void setInChatScreen(boolean inChatScreen) {
         this.inChatScreen = inChatScreen;
     }
 
+    public void setDllInitialized(boolean initialized) {
+        this.dllInitialized = initialized;
+    }
+
     public void update(boolean chineseMode, InputMode inputMode, boolean capsLockOn, boolean inShiftMode, boolean isTyping, boolean layoutChanged) {
+        if (!this.dllInitialized) return;
+
+        boolean changed = this.chineseMode != chineseMode
+            || this.inputMode != inputMode
+            || this.capsLockOn != capsLockOn
+            || this.inShiftMode != inShiftMode;
+
         this.chineseMode = chineseMode;
         this.inputMode = inputMode;
         this.capsLockOn = capsLockOn;
         this.inShiftMode = inShiftMode;
 
-        this.visible = this.inChatScreen || true;
-        this.lastChineseMode = chineseMode;
-        this.lastInputMode = inputMode;
-        this.lastCapsLockOn = capsLockOn;
+        if (changed) {
+            com.example.chineseime.ChineseIMEInitializer.LOGGER.info(
+                "[ChineseIME] Indicator: IME={}, CapsLock={}, ShiftMode={}, ChineseMode={}",
+                getDisplayText(), capsLockOn, inShiftMode, chineseMode);
+        }
     }
 
     public void hide() {
@@ -68,13 +76,6 @@ public class ImeStatusIndicator {
         };
     }
 
-    private int getShiftIndicatorSize() {
-        MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc == null) return SHIFT_INDICATOR_SIZE;
-        int screenHeight = mc.getWindow().getHeight();
-        return Math.round(8.0f * screenHeight / 1080.0f);
-    }
-
     public void render(DrawContext ctx) {
         if (!this.visible) return;
 
@@ -82,11 +83,26 @@ public class ImeStatusIndicator {
         if (mc == null) return;
 
         TextRenderer font = mc.textRenderer;
-        int screenHeight = mc.getWindow().getHeight();
 
-        int x = 4;
-        int y = screenHeight - SIZE - 48;
+        int scaledW = ctx.getScaledWindowWidth();
+        int scaledH = ctx.getScaledWindowHeight();
 
+        int x;
+        int y;
+
+        if (this.inChatScreen) {
+            int chatInputY = scaledH - 14;
+            x = 4;
+            y = chatInputY - SIZE - 4;
+        } else {
+            x = 4;
+            y = scaledH - SIZE - 48;
+        }
+
+        renderIndicator(ctx, font, x, y);
+    }
+
+    private void renderIndicator(DrawContext ctx, TextRenderer font, int x, int y) {
         int bgColor = (!this.inShiftMode && this.capsLockOn) ? BG_CAPS : BG_NORMAL;
 
         ctx.fill(x, y, x + SIZE, y + SIZE, bgColor);
@@ -95,14 +111,13 @@ public class ImeStatusIndicator {
         String text = this.getDisplayText();
         int textWidth = font.getWidth(text);
         int textX = x + (SIZE - textWidth) / 2;
-        int textY = y + (SIZE - 8) / 2;
+        int textY = y + (SIZE - font.fontHeight) / 2 + 1;
         ctx.drawText(font, text, textX, textY, TEXT_COLOR, false);
 
         if (this.inShiftMode) {
-            int shiftIndicatorSize = getShiftIndicatorSize();
-            int shiftX = x + SIZE - shiftIndicatorSize - 1;
+            int shiftX = x + SIZE - SHIFT_INDICATOR_SIZE - 1;
             int shiftY = y + 1;
-            ctx.fill(shiftX, shiftY, shiftX + shiftIndicatorSize, shiftY + shiftIndicatorSize, SHIFT_INDICATOR);
+            ctx.fill(shiftX, shiftY, shiftX + SHIFT_INDICATOR_SIZE, shiftY + SHIFT_INDICATOR_SIZE, SHIFT_INDICATOR);
         }
     }
 
