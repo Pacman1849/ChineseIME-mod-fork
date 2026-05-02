@@ -201,7 +201,7 @@ public boolean inputChar(char c) {
             testCands = java.util.Arrays.asList("测试词语1", "测试词语2", "测试词语3", "测试词语4", "测试词语5", "测试词语6", "测试词语7", "测试词语8", "测试词语9");
         }
         List<String> displayCands = testCands.subList(0, Math.min(9, testCands.size()));
-        hud.updateCandidates(displayCands, "测试");
+        hud.updateCandidates(displayCands, "test");
         testModeActive = true;
     }
 

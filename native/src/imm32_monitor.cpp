@@ -104,9 +104,10 @@ void Imm32Monitor::processComposition(HWND hwnd, HIMC himc) {
 
     LONG compLen = ImmGetCompositionString(himc, GCS_COMPREADSTR, nullptr, 0);
     if (compLen > 0) {
-        wchar_t* compBuf = new wchar_t[compLen + 1];
+        int wcharLen = compLen / sizeof(wchar_t);
+        wchar_t* compBuf = new wchar_t[wcharLen + 1];
         ImmGetCompositionString(himc, GCS_COMPREADSTR, compBuf, compLen);
-        compBuf[compLen] = 0;
+        compBuf[wcharLen] = 0;
         composition = compBuf;
         delete[] compBuf;
     }

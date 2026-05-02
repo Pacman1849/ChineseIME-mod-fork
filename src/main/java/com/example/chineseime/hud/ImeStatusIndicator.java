@@ -20,8 +20,8 @@ public class ImeStatusIndicator {
     private static final int TEXT_COLOR = 0xFFFFFFFF;
     private static final int SHIFT_INDICATOR = 0xFFFFAA00;
 
-    private static final int SIZE = 36;
-    private static final int SHIFT_INDICATOR_SIZE = 8;
+    private static final int SIZE_1080P = 40;
+    private static final int SHIFT_INDICATOR_SIZE_1080P = 8;
 
     public ImeStatusIndicator() {
         this.inputMode = InputMode.PINYIN;
@@ -41,8 +41,6 @@ public class ImeStatusIndicator {
     }
 
     public void update(boolean chineseMode, InputMode inputMode, boolean capsLockOn, boolean inShiftMode, boolean isTyping, boolean layoutChanged) {
-        if (!this.dllInitialized) return;
-
         boolean changed = this.chineseMode != chineseMode
             || this.inputMode != inputMode
             || this.capsLockOn != capsLockOn
@@ -52,6 +50,7 @@ public class ImeStatusIndicator {
         this.inputMode = inputMode;
         this.capsLockOn = capsLockOn;
         this.inShiftMode = inShiftMode;
+        this.visible = true;
 
         if (changed) {
             com.example.chineseime.ChineseIMEInitializer.LOGGER.info(
@@ -83,41 +82,37 @@ public class ImeStatusIndicator {
         if (mc == null) return;
 
         TextRenderer font = mc.textRenderer;
-
         int scaledW = ctx.getScaledWindowWidth();
         int scaledH = ctx.getScaledWindowHeight();
+        int physicalW = mc.getWindow().getWidth();
+        float scale = physicalW > 0 ? (float) physicalW / (float) scaledW : 2.0f;
 
-        int x;
-        int y;
+        int size = (int)(SIZE_1080P / scale);
+        int shiftSize = (int)(SHIFT_INDICATOR_SIZE_1080P / scale);
+        int margin = (int)(8 / scale);
+        int x = margin;
+        int y = scaledH - (int)(80 / scale) - size - 0;
 
-        if (this.inChatScreen) {
-            int chatInputY = scaledH - 14;
-            x = 4;
-            y = chatInputY - SIZE - 4;
-        } else {
-            x = 4;
-            y = scaledH - SIZE - 48;
-        }
-
-        renderIndicator(ctx, font, x, y);
+        renderIndicator(ctx, font, x, y, size, shiftSize);
     }
 
-    private void renderIndicator(DrawContext ctx, TextRenderer font, int x, int y) {
+    private void renderIndicator(DrawContext ctx, TextRenderer font, int x, int y, int size, int shiftSize) {
         int bgColor = (!this.inShiftMode && this.capsLockOn) ? BG_CAPS : BG_NORMAL;
 
-        ctx.fill(x, y, x + SIZE, y + SIZE, bgColor);
-        ctx.drawBorder(x, y, SIZE, SIZE, BORDER_COLOR);
+        ctx.fill(x, y, x + size, y + size, bgColor);
+        ctx.drawBorder(x, y, size, size, BORDER_COLOR);
 
         String text = this.getDisplayText();
         int textWidth = font.getWidth(text);
-        int textX = x + (SIZE - textWidth) / 2;
-        int textY = y + (SIZE - font.fontHeight) / 2 + 1;
+        int textX = x + (size - textWidth) / 2;
+        int textY = y + (size - font.fontHeight) / 2 + 1;
         ctx.drawText(font, text, textX, textY, TEXT_COLOR, false);
 
         if (this.inShiftMode) {
-            int shiftX = x + SIZE - SHIFT_INDICATOR_SIZE - 1;
-            int shiftY = y + 1;
-            ctx.fill(shiftX, shiftY, shiftX + SHIFT_INDICATOR_SIZE, shiftY + SHIFT_INDICATOR_SIZE, SHIFT_INDICATOR);
+            int shiftPad = (int)(2 / ((float) size / SIZE_1080P));
+            int shiftX = x + size - shiftSize - shiftPad;
+            int shiftY = y + shiftPad;
+            ctx.fill(shiftX, shiftY, shiftX + shiftSize, shiftY + shiftSize, SHIFT_INDICATOR);
         }
     }
 
@@ -137,7 +132,7 @@ public class ImeStatusIndicator {
         return this.inShiftMode;
     }
 
-    public static int getHeight() {
-        return SIZE;
+    public static int getHeight(float scale) {
+        return (int)(SIZE_1080P / scale);
     }
 }

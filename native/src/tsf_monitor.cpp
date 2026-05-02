@@ -262,7 +262,9 @@ bool TsfMonitor::detectChineseMode() {
 void TsfMonitor::updateCache() {
     ImeStateManager& mgr = ImeStateManager::get();
 
-    mgr.updateInputMethod(currentInputMethod_);
+    if (currentInputMethod_ != InputMethodType::UNKNOWN) {
+        mgr.updateInputMethod(currentInputMethod_);
+    }
     mgr.updateChineseMode(chineseMode_);
 
     ITfContext* ctx = getCurrentContext();
@@ -289,9 +291,10 @@ void TsfMonitor::updateCache() {
                 std::wstring composition;
                 LONG compLen = ImmGetCompositionString(himc, GCS_COMPREADSTR, nullptr, 0);
                 if (compLen > 0) {
-                    wchar_t* compBuf = new wchar_t[compLen + 1];
+                    int wcharLen = compLen / sizeof(wchar_t);
+                    wchar_t* compBuf = new wchar_t[wcharLen + 1];
                     ImmGetCompositionString(himc, GCS_COMPREADSTR, compBuf, compLen);
-                    compBuf[compLen] = 0;
+                    compBuf[wcharLen] = 0;
                     composition = compBuf;
                     delete[] compBuf;
                 }
@@ -396,13 +399,9 @@ void TsfMonitor::notifyStateChanges(const IMEState& oldState, const IMEState& ne
         );
     }
 
-if (oldState.inputMethodType != newState.inputMethodType) {
-    onImeStateChanged(static_cast<int>(newState.inputMethodType), newState.chineseMode);
-}
-
-if (oldState.chineseMode != newState.chineseMode) {
-    onImeStateChanged(static_cast<int>(newState.inputMethodType), newState.chineseMode);
-}
+if (oldState.inputMethodType != newState.inputMethodType || oldState.chineseMode != newState.chineseMode) {
+        onImeStateChanged(static_cast<int>(newState.inputMethodType), newState.chineseMode);
+    }
 }
 
 bool TsfMonitor::getCompositionString(ITfContext* pic, std::wstring& result) {

@@ -51,6 +51,9 @@ CHINESEIME_API int GetInputMethodType(void);
 // Force refresh (call from Java poll loop)
 CHINESEIME_API void RefreshImeState(void);
 
+// Poll individual key state (for real-time Shift detection)
+CHINESEIME_API int GetKeyboardStateForPolling(int vKey);
+
 // Memory management
 CHINESEIME_API void FreeBuffer(void* ptr);
 

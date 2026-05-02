@@ -168,17 +168,24 @@ public class ConfigScreen extends Screen {
 
     private void renderCandidates(DrawContext ctx, int y, boolean hovered) {
         ctx.fill(panelX + PADDING, y, panelX + panelW - PADDING, y + ITEM_H, SECTION_BG);
-        if (hovered) ctx.fill(panelX + PADDING, y, panelX + panelW - PADDING, y + ITEM_H, HOVER_BG);
+        if (hovered && !isWindows) ctx.fill(panelX + PADDING, y, panelX + panelW - PADDING, y + ITEM_H, HOVER_BG);
 
+        int textColor = isWindows ? TEXT_DISABLED : TEXT_COLOR;
         Text label = Text.literal("候选词数量");
-        ctx.drawText(this.textRenderer, label, panelX + PADDING + 10, y + 8, TEXT_COLOR, false);
+        ctx.drawText(this.textRenderer, label, panelX + PADDING + 10, y + 8, textColor, false);
 
         Text value = Text.literal(String.valueOf(config.getMaxCandidates()));
-        ctx.drawText(this.textRenderer, value, panelX + panelW - PADDING - 10 - this.textRenderer.getWidth(value), y + 8, TEXT_COLOR, false);
+        ctx.drawText(this.textRenderer, value, panelX + panelW - PADDING - 10 - this.textRenderer.getWidth(value), y + 8, textColor, false);
 
         int sliderX = panelX + panelW - PADDING - SLIDER_W - 60;
         int sliderY = y + (ITEM_H - SLIDER_H) / 2;
-        renderSlider(ctx, sliderX, sliderY, SLIDER_W, config.getMaxCandidates(), 5, 9);
+        int sliderColor = isWindows ? 0x66666666 : BORDER_COLOR;
+        if (isWindows) {
+            ctx.drawBorder(sliderX, sliderY, SLIDER_W, SLIDER_H, 0x66666666);
+            ctx.fill(sliderX + 2, sliderY + 2, sliderX + SLIDER_W - 2, sliderY + SLIDER_H - 2, 0x66000000);
+        } else {
+            renderSlider(ctx, sliderX, sliderY, SLIDER_W, config.getMaxCandidates(), 5, 9);
+        }
     }
 
     private void renderInputMode(DrawContext ctx, int y, boolean hovered) {
@@ -411,6 +418,7 @@ public class ConfigScreen extends Screen {
                 }
             }
             case CANDIDATES -> {
+                if (isWindows) break;
                 int sliderX = panelX + panelW - PADDING - SLIDER_W - 60;
                 int sliderY = item.y + (ITEM_H - SLIDER_H) / 2;
                 if (mx >= sliderX && mx <= sliderX + SLIDER_W && my >= sliderY && my <= sliderY + SLIDER_H) {
@@ -481,6 +489,7 @@ public class ConfigScreen extends Screen {
                 }
             }
             case CANDIDATES -> {
+                if (isWindows) return false;
                 int sliderX = panelX + panelW - PADDING - SLIDER_W - 60;
                 int sliderY = item.y + (ITEM_H - SLIDER_H) / 2;
                 if (mx >= sliderX && mx <= sliderX + SLIDER_W && my >= sliderY && my <= sliderY + SLIDER_H) {
