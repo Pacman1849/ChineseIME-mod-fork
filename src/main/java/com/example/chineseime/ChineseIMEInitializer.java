@@ -41,11 +41,12 @@ public class ChineseIMEInitializer implements ClientModInitializer {
         this.config = ModConfig.load();
         this.candidateHud = new CandidateHud();
         this.statusIndicator = new ImeStatusIndicator();
-        this.imeManager = new PlatformIMEManager(this.config, this.candidateHud);
+        this.imeManager = new PlatformIMEManager(this.config, this.candidateHud, this.statusIndicator);
         this.keyBindingManager = new KeyBindingManager(this.config, this.imeManager);
         this.keyBindingManager.register();
 
-        this.imeManager.showTestCandidates();
+        // Test candidates disabled, fully rely on DLL callbacks
+        // this.imeManager.showTestCandidates();
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             this.keyBindingManager.tick();
@@ -111,28 +112,7 @@ public class ChineseIMEInitializer implements ClientModInitializer {
         MinecraftClient mc = MinecraftClient.getInstance();
         if (mc == null) return;
 
-        boolean inChatScreen = mc.currentScreen instanceof ChatScreen;
-        this.statusIndicator.setInChatScreen(inChatScreen);
-
-        boolean layoutChanged = this.imeManager.checkAndClearLayoutChanged();
-        boolean capsLockOn = false;
-        boolean inShiftMode = false;
-        boolean chineseMode = this.config.isChineseMode();
-
-        if (this.imeManager.isWindowsSync()) {
-            Object bridge = this.imeManager.getWindowsBridge();
-            if (bridge instanceof WindowsIMEBridgeNative windowsBridge) {
-                capsLockOn = windowsBridge.isCapsLockOn();
-                inShiftMode = windowsBridge.isInShiftMode();
-                chineseMode = windowsBridge.isChineseMode();
-                this.statusIndicator.setDllInitialized(true);
-            }
-        }
-
-        InputMode detectedMode = this.imeManager.getDetectedInputMode();
-        this.statusIndicator.update(chineseMode, detectedMode, capsLockOn, inShiftMode, true, layoutChanged);
-
-        this.candidateHud.render(ctx);
         this.statusIndicator.render(ctx);
+        this.candidateHud.render(ctx);
     }
 }

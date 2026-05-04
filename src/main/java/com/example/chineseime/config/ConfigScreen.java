@@ -416,6 +416,7 @@ public class ConfigScreen extends Screen {
                     value = Math.max(50, Math.min(150, value));
                     config.setHudScale(value);
                 }
+                break;
             }
             case CANDIDATES -> {
                 if (isWindows) break;
@@ -426,15 +427,18 @@ public class ConfigScreen extends Screen {
                     int value = Math.round(5 + ratio * 4);
                     config.setMaxCandidates(value);
                 }
+                break;
             }
             case INPUT_MODE -> {
                 if (!isWindows) {
                     InputMode[] modes = {InputMode.LATIN, InputMode.RIME};
                     config.setInputMode(config.getInputMode() == InputMode.LATIN ? modes[1] : modes[0]);
                 }
+                break;
             }
             case SCRIPT -> {
                 if (!isWindows) config.toggleScriptType();
+                break;
             }
             case SHORTCUT_TOGGLE_IME -> {
                 int sliderX = panelX + panelW - PADDING - SLIDER_W - 60;
@@ -443,6 +447,7 @@ public class ConfigScreen extends Screen {
                     return false;
                 }
                 waitingForKeybind = true;
+                break;
             }
             case SHORTCUT_TOGGLE_MODE -> {
                 if (isWindows) return false;
@@ -452,6 +457,7 @@ public class ConfigScreen extends Screen {
                     return false;
                 }
                 waitingForKeybind = true;
+                break;
             }
             case RESET_DEFAULTS -> {
                 int btnW = 120;

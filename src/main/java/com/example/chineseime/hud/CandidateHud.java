@@ -12,13 +12,10 @@ public class CandidateHud {
     private int selected = 0;
     private int page = 0;
     private int perPage = 9;
-    private boolean visible = true;
-    private int x;
-    private int y;
-    private int width;
-    private int height;
+    private boolean visible = false;
+    private int x, y, width, height;
 
-    private static final int BG = 0xCC000000;
+    private static final int BG = 0xB3000000;
     private static final int SEL_BG = 0x66B1B4B6;
     private static final int SEL_BAR = 0xFF4488FF;
     private static final int TEXT_COLOR = 0xFFFFFFFF;
@@ -30,7 +27,6 @@ public class CandidateHud {
     private static final int HUD_HEIGHT_1080P = 36;
     private static final int ITEM_WIDTH_1080P = 60;
     private static final int ITEM_GAP_1080P = 0;
-    private static final int MAX_WIDTH_1080P = 960;
     private static final int MARGIN_1080P = 8;
     private static final int ARROW_W_1080P = 20;
     private static final int ARROW_GAP_1080P = 6;
@@ -38,19 +34,18 @@ public class CandidateHud {
     private static final int HIGHLIGHT_MARGIN_1080P = 2;
     private static final int COMPO_MIN_GAP_1080P = 10;
     private static final int COMPO_PAD_1080P = 8;
+    private static final int CAND_END_PAD_1080P = 6;
+    private static final int NUM_PAD_1080P = 2;
 
     private boolean prevArrowHovered = false;
     private boolean nextArrowHovered = false;
-    private boolean pageArrowClicked = false;
-
-    private boolean permanentShow = true;
 
     public void updateCandidates(List<String> candidates, String composition) {
         this.candidates = candidates != null ? new ArrayList<>(candidates) : new ArrayList<>();
         this.composition = composition != null ? composition : "";
         this.selected = 0;
         this.page = 0;
-        this.visible = permanentShow || !this.candidates.isEmpty();
+        this.visible = !this.candidates.isEmpty();
     }
 
     public void updateCandidatesKeepSelection(List<String> candidates, String composition, int selectedIndex, int page) {
@@ -64,7 +59,7 @@ public class CandidateHud {
             int newPage = this.selected / this.perPage;
             if (newPage != this.page) this.page = newPage;
         }
-        this.visible = permanentShow || !this.candidates.isEmpty();
+        this.visible = !this.candidates.isEmpty();
     }
 
     public void clear() {
@@ -72,16 +67,14 @@ public class CandidateHud {
         this.composition = "";
         this.selected = 0;
         this.page = 0;
+        this.visible = false;
     }
 
     public void selectPrevious() {
         if (this.candidates.isEmpty()) return;
         if (this.selected > 0) {
             this.selected--;
-            int newPage = this.selected / this.perPage;
-            if (newPage != this.page) {
-                this.page = newPage;
-            }
+            this.page = this.selected / this.perPage;
         }
     }
 
@@ -89,10 +82,7 @@ public class CandidateHud {
         if (this.candidates.isEmpty()) return;
         if (this.selected < this.candidates.size() - 1) {
             this.selected++;
-            int newPage = this.selected / this.perPage;
-            if (newPage != this.page) {
-                this.page = newPage;
-            }
+            this.page = this.selected / this.perPage;
         }
     }
 
@@ -121,37 +111,18 @@ public class CandidateHud {
         return this.selected >= 0 && this.selected < this.candidates.size() ? this.candidates.get(this.selected) : "";
     }
 
-    public boolean isVisible() {
-        return this.visible;
-    }
-
-    public int getSelectedIndex() {
-        return this.selected;
-    }
-
-    public List<String> getCandidates() {
-        return this.candidates;
-    }
-
-    public String getInput() {
-        return this.composition;
-    }
-
-    public int getPage() {
-        return this.page;
-    }
-
-    public int getTotalPages() {
-        return (this.candidates.size() + this.perPage - 1) / this.perPage;
-    }
-
-    public boolean hasPrevPage() {
-        return this.page > 0;
-    }
-
-    public boolean hasNextPage() {
-        return this.page < getTotalPages() - 1;
-    }
+    public boolean isVisible() { return this.visible; }
+    public int getSelectedIndex() { return this.selected; }
+    public List<String> getCandidates() { return this.candidates; }
+    public String getInput() { return this.composition; }
+    public int getPage() { return this.page; }
+    public int getTotalPages() { return (this.candidates.size() + this.perPage - 1) / this.perPage; }
+    public boolean hasPrevPage() { return this.page > 0; }
+    public boolean hasNextPage() { return this.page < getTotalPages() - 1; }
+    public int getX() { return this.x; }
+    public int getY() { return this.y; }
+    public int getWidth() { return this.width; }
+    public int getHeight() { return this.height; }
 
     public boolean handleClick(double mouseX, double mouseY, float scale) {
         if (!this.visible) return false;
@@ -160,7 +131,6 @@ public class CandidateHud {
 
         if (my < this.y || my > this.y + this.height) return false;
 
-        int itemW = (int)(ITEM_WIDTH_1080P / scale);
         int gap = (int)(ITEM_GAP_1080P / scale);
         int start = this.page * this.perPage;
         int end = Math.min(start + this.perPage, this.candidates.size());
@@ -168,25 +138,29 @@ public class CandidateHud {
         int arrowW = (int)(ARROW_W_1080P / scale);
         int arrowGap = (int)(ARROW_GAP_1080P / scale);
 
-        int compoCx = this.x + computePad(scale) + (compoW > 0 ? compoW + gap : 0);
+        int[] itemWidths = computeItemWidths(start, end, scale);
+        int compoMinGap = computeCompositionMinGap(scale);
+        int compoCx = this.x + computePad(scale) + (compoW > 0 ? compoW + compoMinGap : 0);
+        int cx = compoCx;
         for (int i = start; i < end; i++) {
-            int itemX = compoCx + (i - start) * (itemW + gap);
-            if (mx >= itemX && mx < itemX + itemW) {
+            int itemW = itemWidths[i - start];
+            if (mx >= cx && mx < cx + itemW) {
                 this.selected = i;
                 return true;
             }
+            cx += itemW + gap;
         }
 
-        int visibleCount = end - start;
-        int arrowsX = compoCx + visibleCount * (itemW + gap) + arrowGap;
-        if (visibleCount > 0) {
+        int candidatesTotalW = 0;
+        for (int w : itemWidths) candidatesTotalW += w;
+        candidatesTotalW += Math.max(0, end - start - 1) * gap;
+        int arrowsX = compoCx + candidatesTotalW + arrowGap;
+        if (end > start) {
             if (mx >= arrowsX && mx < arrowsX + arrowW) {
-                this.pageArrowClicked = true;
                 this.prevPage();
                 return true;
             }
             if (mx >= arrowsX + arrowW && mx < arrowsX + arrowW * 2) {
-                this.pageArrowClicked = true;
                 this.nextPage();
                 return true;
             }
@@ -210,7 +184,6 @@ public class CandidateHud {
             return;
         }
 
-        int itemW = (int)(ITEM_WIDTH_1080P / scale);
         int gap = (int)(ITEM_GAP_1080P / scale);
         int compoW = computeCompositionWidth(scale);
         int arrowW = (int)(ARROW_W_1080P / scale);
@@ -219,9 +192,14 @@ public class CandidateHud {
         int start = this.page * this.perPage;
         int end = Math.min(start + this.perPage, this.candidates.size());
         int visibleCount = end - start;
+        int[] itemWidths = computeItemWidths(start, end, scale);
 
-        int compoCx = this.x + computePad(scale) + (compoW > 0 ? compoW + gap : 0);
-        int arrowsX = compoCx + visibleCount * (itemW + gap) + arrowGap;
+        int compoMinGap = computeCompositionMinGap(scale);
+        int compoCx = this.x + computePad(scale) + (compoW > 0 ? compoW + compoMinGap : 0);
+        int candidatesTotalW = 0;
+        for (int w : itemWidths) candidatesTotalW += w;
+        candidatesTotalW += Math.max(0, visibleCount - 1) * gap;
+        int arrowsX = compoCx + candidatesTotalW + arrowGap;
         this.prevArrowHovered = visibleCount > 0 && mx >= arrowsX && mx < arrowsX + arrowW;
         this.nextArrowHovered = visibleCount > 0 && mx >= arrowsX + arrowW && mx < arrowsX + arrowW * 2;
     }
@@ -241,11 +219,29 @@ public class CandidateHud {
         return (int)(COMPO_MIN_GAP_1080P / scale);
     }
 
-    public void render(DrawContext ctx) {
-        if (!this.visible) {
-            this.pageArrowClicked = false;
-            return;
+    private int[] computeItemWidths(int start, int end, float scale) {
+        int visibleCount = end - start;
+        int[] widths = new int[visibleCount];
+        MinecraftClient mc = MinecraftClient.getInstance();
+        TextRenderer font = mc.textRenderer;
+        int minItemW = (int)(ITEM_WIDTH_1080P / scale);
+        int candEndPad = (int)(CAND_END_PAD_1080P / scale);
+        int numPad = (int)(NUM_PAD_1080P / scale);
+        int blueBarW = (int)(BLUE_BAR_W_1080P / scale);
+        for (int i = start; i < end; i++) {
+            String cand = this.candidates.get(i);
+            int localIndex = (i - start) + 1;
+            String numStr = String.valueOf(localIndex);
+            int numW = font.getWidth(numStr);
+            int candW = font.getWidth(cand);
+            int totalTextW = numW + numPad + candW;
+            widths[i - start] = Math.max(minItemW, totalTextW + blueBarW + candEndPad);
         }
+        return widths;
+    }
+
+    public void render(DrawContext ctx) {
+        if (!this.visible) return;
 
         MinecraftClient mc = MinecraftClient.getInstance();
         TextRenderer font = mc.textRenderer;
@@ -256,8 +252,8 @@ public class CandidateHud {
         float scale = physicalW > 0 ? (float) physicalW / (float) scaledW : 2.0f;
 
         int h = (int)(HUD_HEIGHT_1080P / scale);
-        int itemW = (int)(ITEM_WIDTH_1080P / scale);
         int gap = (int)(ITEM_GAP_1080P / scale);
+        int numPad = (int)(NUM_PAD_1080P / scale);
         int pad = computePad(scale);
         int rightPad = (int)(8 / scale);
         int highlightMargin = (int)(HIGHLIGHT_MARGIN_1080P / scale);
@@ -272,30 +268,19 @@ public class CandidateHud {
         int compoW = computeCompositionWidth(scale);
         int compoMinGap = computeCompositionMinGap(scale);
 
-        int candidatesW = visibleCount * itemW + Math.max(0, visibleCount - 1) * gap;
+        int[] itemWidths = computeItemWidths(start, end, scale);
+        int candidatesW = 0;
+        for (int w : itemWidths) candidatesW += w;
+        candidatesW += Math.max(0, visibleCount - 1) * gap;
+
         int arrowsW = visibleCount > 0 ? arrowW * 2 + arrowGap * 2 : 0;
         int compoAreaW = compoW > 0 ? compoW + compoMinGap : 0;
         int rawW = pad + compoAreaW + candidatesW + arrowsW + rightPad;
-        int maxW = (int)(MAX_WIDTH_1080P / scale);
 
-        boolean compositionScroll = false;
-        int compoDisplayW = compoW;
-
-        if (rawW > maxW && compoW > 0) {
-            compositionScroll = true;
-            int fixedCandidatesW = Math.min(candidatesW, maxW - pad - compoMinGap - compoW - arrowsW - rightPad - arrowW * 2);
-            compoDisplayW = maxW - pad - compoMinGap - fixedCandidatesW - arrowsW - rightPad - arrowW * 2;
-            if (compoDisplayW < (int)(40 / scale)) compoDisplayW = (int)(40 / scale);
-            compoW = compoDisplayW;
-            rawW = maxW;
-        }
-
-        int contentW = rawW;
-        if (contentW > maxW) contentW = maxW;
-
-        this.width = contentW;
+        this.width = rawW;
         this.x = (int)(MARGIN_1080P / scale);
-        this.y = scaledH - (int)(78 / scale);
+        int chatInputTop = scaledH - 22 - 14;
+        this.y = chatInputTop - 2 - h;
         this.height = h;
 
         int px = this.x;
@@ -310,28 +295,8 @@ public class CandidateHud {
 
         if (compoW > 0) {
             int compoTextW = font.getWidth(this.composition);
-            int compoPadInside = (int)(COMPO_PAD_1080P / scale);
-
-            if (compositionScroll) {
-                int scrollArrowY = textY;
-                int scrollArrowColor = ARROW_COLOR;
-                ctx.drawText(font, "<", cx, scrollArrowY, scrollArrowColor, false);
-                cx += arrowW;
-            }
-
-            int compoTextX = cx;
-            if (compositionScroll && compoTextW > compoW - compoPadInside * 2) {
-                compoTextX = cx;
-            } else {
-                compoTextX = cx + (compoW - compoTextW) / 2;
-            }
+            int compoTextX = cx + (compoW - compoTextW) / 2;
             ctx.drawText(font, this.composition, compoTextX, textY, INPUT_COLOR, false);
-
-            if (compositionScroll) {
-                int scrollArrowX = cx + compoW - arrowW;
-                ctx.drawText(font, ">", scrollArrowX, textY, ARROW_COLOR, false);
-            }
-
             cx += compoW + compoMinGap;
         }
 
@@ -339,29 +304,33 @@ public class CandidateHud {
             String cand = this.candidates.get(i);
             boolean isSelected = i == this.selected;
             int localIndex = (i - start) + 1;
+            int localIdx = i - start;
+            int itemW = itemWidths[localIdx];
 
-            int itemLeft = cx + (i - start) * (itemW + gap);
+            int itemX = cx;
+            for (int j = 0; j < localIdx; j++) {
+                itemX += itemWidths[j] + gap;
+            }
 
             if (isSelected) {
-                ctx.fill(itemLeft, py + highlightMargin,
-                    itemLeft + itemW, py + ph - highlightMargin, SEL_BG);
-                ctx.fill(itemLeft, py + highlightMargin,
-                    itemLeft + blueBarW, py + ph - highlightMargin, SEL_BAR);
+                ctx.fill(itemX, py + highlightMargin,
+                    itemX + itemW, py + ph - highlightMargin, SEL_BG);
+                ctx.fill(itemX, py + highlightMargin,
+                    itemX + blueBarW, py + ph - highlightMargin, SEL_BAR);
             }
 
             String numStr = String.valueOf(localIndex);
             int numW = font.getWidth(numStr);
             int candW = font.getWidth(cand);
-            int spacer = font.getWidth(" ");
-            int totalTextW = numW + 1 + candW;
-            int textX = itemLeft + (itemW - totalTextW) / 2;
+            int totalTextW = numW + numPad + candW;
+            int textX = itemX + blueBarW + (itemW - blueBarW - totalTextW) / 2;
 
             ctx.drawText(font, numStr, textX, textY, NUM_COLOR, false);
-            ctx.drawText(font, cand, textX + numW + 1, textY, TEXT_COLOR, false);
+            ctx.drawText(font, cand, textX + numW + numPad, textY, TEXT_COLOR, false);
         }
 
         if (visibleCount > 0) {
-            int arrowsX = cx + visibleCount * (itemW + gap) + arrowGap;
+            int arrowsX = cx + candidatesW + arrowGap;
             int arrowColorLeft = this.prevArrowHovered ? ARROW_HOVER_COLOR : ARROW_COLOR;
             int arrowColorRight = this.nextArrowHovered ? ARROW_HOVER_COLOR : ARROW_COLOR;
             ctx.drawText(font, "<", arrowsX, textY, arrowColorLeft, false);
@@ -374,21 +343,6 @@ public class CandidateHud {
         this.composition = "";
         this.selected = 0;
         this.page = 0;
-    }
-
-    public int getX() {
-        return this.x;
-    }
-
-    public int getY() {
-        return this.y;
-    }
-
-    public int getWidth() {
-        return this.width;
-    }
-
-    public int getHeight() {
-        return this.height;
+        this.visible = false;
     }
 }

@@ -74,11 +74,15 @@ void ImeStateManager::updateComposition(const std::wstring& comp) {
 
 void ImeStateManager::updateCandidates(const std::wstring& comp, const std::vector<std::wstring>& cands, int selectedIndex) {
     std::lock_guard<std::mutex> lock(mutex_);
-    state_.composition = comp;
-    state_.candidates = cands;
-    state_.selectedIndex = selectedIndex;
-    changes_.compositionChanged = true;
-    changes_.candidatesChanged = true;
+    if (state_.composition != comp) {
+        state_.composition = comp;
+        changes_.compositionChanged = true;
+    }
+    if (state_.candidates != cands || state_.selectedIndex != selectedIndex) {
+        state_.candidates = cands;
+        state_.selectedIndex = selectedIndex;
+        changes_.candidatesChanged = true;
+    }
 }
 
 void ImeStateManager::updateKeyboardState(bool capsLock, bool shiftPressed) {

@@ -5,6 +5,7 @@ import com.example.chineseime.config.ModConfig;
 import com.example.chineseime.engine.InputMode;
 import com.example.chineseime.engine.PinyinDictionary;
 import com.example.chineseime.hud.CandidateHud;
+import com.example.chineseime.hud.ImeStatusIndicator;
 import com.example.chineseime.platform.win32.WindowsIMEBridgeNative;
 import java.util.List;
 
@@ -14,19 +15,20 @@ public class PlatformIMEManager {
     private WindowsIMEBridgeNative windowsBridge;
     private boolean syncEnabled = false;
 
-    public PlatformIMEManager(ModConfig config, CandidateHud hud) {
+    public PlatformIMEManager(ModConfig config, CandidateHud hud, ImeStatusIndicator indicator) {
         this.config = config;
         this.hud = hud;
 
         if (getPlatform() == OS.WINDOWS) {
-            initWindowsIME();
+            initWindowsIME(indicator);
         }
     }
 
-private void initWindowsIME() {
+private void initWindowsIME(ImeStatusIndicator indicator) {
     try {
         ChineseIMEInitializer.LOGGER.info("[ChineseIME] Initializing Windows IME Bridge");
         windowsBridge = new WindowsIMEBridgeNative(hud);
+        windowsBridge.setStatusIndicator(indicator);
         if (windowsBridge.initialize()) {
             syncEnabled = true;
             ChineseIMEInitializer.LOGGER.info("[ChineseIME] Windows IME Bridge initialized, syncEnabled=true");

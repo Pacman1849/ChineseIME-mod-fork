@@ -15,16 +15,17 @@ import net.fabricmc.loader.api.FabricLoader;
 import org.lwjgl.glfw.GLFW;
 
 public class ModConfig {
-   private static final Gson GSON = (new GsonBuilder()).setPrettyPrinting().create();
-   private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("chineseime.json");
-   private InputMode inputMode;
-   private ScriptType scriptType;
-   private boolean chineseMode;
-   private int hudScale;
-   private int maxCandidates;
-   private boolean preferRime;
-   private String rimeSchema;
-private transient boolean windowsLocked;
+    private static final Gson GSON = (new GsonBuilder()).setPrettyPrinting().create();
+    private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("chineseime.json");
+
+    private InputMode inputMode;
+    private ScriptType scriptType;
+    private boolean chineseMode;
+    private int hudScale;
+    private int maxCandidates;
+    private boolean preferRime;
+    private String rimeSchema;
+    private transient boolean windowsLocked;
     private int toggleImeKey;
     private int toggleChineseModeKey;
     private int toggleScriptKey;
@@ -47,211 +48,147 @@ private transient boolean windowsLocked;
         this.toggleChineseModeKeys = new ArrayList<>();
     }
 
-   public void lockForWindows() {
-      this.windowsLocked = true;
-   }
+    public void lockForWindows() {
+        this.windowsLocked = true;
+    }
 
-   public boolean isWindowsLocked() {
-      return this.windowsLocked;
-   }
+    public boolean isWindowsLocked() {
+        return this.windowsLocked;
+    }
 
-   public static ModConfig load() {
-      if (Files.exists(CONFIG_PATH, new LinkOption[0])) {
-         try {
-            label48: {
-               Reader reader = Files.newBufferedReader(CONFIG_PATH);
-
-               ModConfig var2;
-               label42: {
-                  try {
-                     ModConfig config = (ModConfig)GSON.fromJson(reader, ModConfig.class);
-                     if (config != null) {
-                        var2 = config;
-                        break label42;
-                     }
-                  } catch (Throwable var4) {
-                     if (reader != null) {
-                        try {
-                           reader.close();
-                        } catch (Throwable var3) {
-                           var4.addSuppressed(var3);
-                        }
-                     }
-
-                     throw var4;
-                  }
-
-                  if (reader != null) {
-                     reader.close();
-                  }
-                  break label48;
-               }
-
-               if (reader != null) {
-                  reader.close();
-               }
-
-               return var2;
+    public static ModConfig load() {
+        if (Files.exists(CONFIG_PATH, new LinkOption[0])) {
+            try {
+                Reader reader = Files.newBufferedReader(CONFIG_PATH);
+                try {
+                    ModConfig config = (ModConfig) GSON.fromJson(reader, ModConfig.class);
+                    if (config != null) {
+                        return config;
+                    }
+                } finally {
+                    reader.close();
+                }
+            } catch (Exception e) {
+                System.err.println("[ChineseIME] 加载配置失败: " + e.getMessage());
             }
-         } catch (Exception e) {
-            System.err.println("[ChineseIME] 加载配置失败: " + e.getMessage());
-         }
-      }
+        }
 
-      ModConfig config = new ModConfig();
-      config.save();
-      return config;
-   }
+        ModConfig config = new ModConfig();
+        config.save();
+        return config;
+    }
 
-   public void save() {
-      try {
-         Files.createDirectories(CONFIG_PATH.getParent());
-         Writer writer = Files.newBufferedWriter(CONFIG_PATH);
-
-         try {
-            GSON.toJson(this, writer);
-         } catch (Throwable var5) {
-            if (writer != null) {
-               try {
-                  writer.close();
-               } catch (Throwable var4) {
-                  var5.addSuppressed(var4);
-               }
+    public void save() {
+        try {
+            Files.createDirectories(CONFIG_PATH.getParent());
+            Writer writer = Files.newBufferedWriter(CONFIG_PATH);
+            try {
+                GSON.toJson(this, writer);
+            } finally {
+                writer.close();
             }
+        } catch (Exception e) {
+            System.err.println("[ChineseIME] 保存配置失败: " + e.getMessage());
+        }
+    }
 
-            throw var5;
-         }
+    public InputMode getInputMode() { return this.inputMode; }
 
-         if (writer != null) {
-            writer.close();
-         }
-      } catch (Exception e) {
-         System.err.println("[ChineseIME] 保存配置失败: " + e.getMessage());
-      }
+    public void setInputMode(InputMode mode) {
+        this.inputMode = mode;
+        this.save();
+    }
 
-   }
+    public ScriptType getScriptType() { return this.scriptType; }
 
-   public InputMode getInputMode() {
-      return this.inputMode;
-   }
+    public void setScriptType(ScriptType type) {
+        if (!this.windowsLocked) {
+            this.scriptType = type;
+            this.save();
+        }
+    }
 
-   public void setInputMode(InputMode mode) {
-      this.inputMode = mode;
-      this.save();
-   }
+    public boolean isChineseMode() { return this.chineseMode; }
 
-   public ScriptType getScriptType() {
-      return this.scriptType;
-   }
+    public void setChineseMode(boolean mode) {
+        if (!this.windowsLocked) {
+            this.chineseMode = mode;
+            this.save();
+        }
+    }
 
-   public void setScriptType(ScriptType type) {
-      if (!this.windowsLocked) {
-         this.scriptType = type;
-         this.save();
-      }
-   }
+    public void setChineseModeInternal(boolean mode) { this.chineseMode = mode; }
+    public void setScriptTypeInternal(ScriptType type) { this.scriptType = type; }
 
-   public boolean isChineseMode() {
-      return this.chineseMode;
-   }
+    public int getHudScale() { return this.hudScale; }
 
-   public void setChineseMode(boolean mode) {
-      if (!this.windowsLocked) {
-         this.chineseMode = mode;
-         this.save();
-      }
-   }
+    public void setHudScale(int scale) {
+        this.hudScale = scale;
+        this.save();
+    }
 
-   public void setChineseModeInternal(boolean mode) {
-      this.chineseMode = mode;
-   }
+    public int getMaxCandidates() { return this.maxCandidates; }
 
-   public void setScriptTypeInternal(ScriptType type) {
-      this.scriptType = type;
-   }
+    public void setMaxCandidates(int max) {
+        this.maxCandidates = max;
+        this.save();
+    }
 
-   public int getHudScale() {
-      return this.hudScale;
-   }
+    public boolean isPreferRime() { return this.preferRime; }
 
-   public void setHudScale(int scale) {
-      this.hudScale = scale;
-      this.save();
-   }
+    public void setPreferRime(boolean prefer) {
+        this.preferRime = prefer;
+        this.save();
+    }
 
-   public int getMaxCandidates() {
-      return this.maxCandidates;
-   }
+    public String getRimeSchema() { return this.rimeSchema; }
 
-   public void setMaxCandidates(int max) {
-      this.maxCandidates = max;
-      this.save();
-   }
+    public void setRimeSchema(String schema) {
+        this.rimeSchema = schema;
+        this.save();
+    }
 
-   public boolean isPreferRime() {
-      return this.preferRime;
-   }
+    public void toggleChineseMode() {
+        if (!this.windowsLocked) {
+            this.chineseMode = !this.chineseMode;
+            this.save();
+        }
+    }
 
-   public void setPreferRime(boolean prefer) {
-      this.preferRime = prefer;
-      this.save();
-   }
+    public void toggleScriptType() {
+        if (!this.windowsLocked) {
+            this.scriptType = this.scriptType == ScriptType.SIMPLIFIED ? ScriptType.TRADITIONAL : ScriptType.SIMPLIFIED;
+            this.save();
+        }
+    }
 
-   public String getRimeSchema() {
-      return this.rimeSchema;
-   }
+    public void cycleInputMode() {
+        if (this.windowsLocked) {
+            if (this.inputMode == InputMode.PINYIN) {
+                this.inputMode = InputMode.RIME;
+            } else {
+                this.inputMode = InputMode.PINYIN;
+            }
+        } else {
+            InputMode[] modes = InputMode.values();
+            this.inputMode = modes[(this.inputMode.ordinal() + 1) % modes.length];
+        }
+        this.save();
+    }
 
-   public void setRimeSchema(String schema) {
-      this.rimeSchema = schema;
-      this.save();
-   }
+    public int getToggleImeKey() { return this.toggleImeKey; }
 
-   public void toggleChineseMode() {
-      if (!this.windowsLocked) {
-         this.chineseMode = !this.chineseMode;
-         this.save();
-      }
-   }
+    public void setToggleImeKey(int key) {
+        this.toggleImeKey = key;
+        this.save();
+    }
 
-   public void toggleScriptType() {
-      if (!this.windowsLocked) {
-         this.scriptType = this.scriptType == ScriptType.SIMPLIFIED ? ScriptType.TRADITIONAL : ScriptType.SIMPLIFIED;
-         this.save();
-      }
-   }
-
-   public void cycleInputMode() {
-      if (this.windowsLocked) {
-         if (this.inputMode == InputMode.PINYIN) {
-            this.inputMode = InputMode.RIME;
-         } else {
-            this.inputMode = InputMode.PINYIN;
-         }
-      } else {
-         InputMode[] modes = InputMode.values();
-         this.inputMode = modes[(this.inputMode.ordinal() + 1) % modes.length];
-      }
-
-      this.save();
-   }
-
-   public int getToggleImeKey() {
-      return this.toggleImeKey;
-   }
-
-   public void setToggleImeKey(int key) {
-      this.toggleImeKey = key;
-      this.save();
-   }
-
-public void clearToggleImeKey() {
+    public void clearToggleImeKey() {
         this.toggleImeKey = -1;
         this.save();
     }
 
-    public int getToggleChineseModeKey() {
-        return this.toggleChineseModeKey;
-    }
+    public int getToggleChineseModeKey() { return this.toggleChineseModeKey; }
 
     public void setToggleChineseModeKey(int key) {
         this.toggleChineseModeKey = key;
@@ -281,21 +218,19 @@ public void clearToggleImeKey() {
         this.save();
     }
 
-    public int getToggleScriptKey() {
-      return this.toggleScriptKey;
-   }
+    public int getToggleScriptKey() { return this.toggleScriptKey; }
 
-   public void setToggleScriptKey(int key) {
-      this.toggleScriptKey = key;
-      this.save();
-   }
+    public void setToggleScriptKey(int key) {
+        this.toggleScriptKey = key;
+        this.save();
+    }
 
-   public void clearToggleScriptKey() {
-      this.toggleScriptKey = -1;
-      this.save();
-   }
+    public void clearToggleScriptKey() {
+        this.toggleScriptKey = -1;
+        this.save();
+    }
 
-public void resetAllKeybinds() {
+    public void resetAllKeybinds() {
         this.toggleImeKey = -1;
         this.toggleChineseModeKey = -1;
         this.toggleScriptKey = -1;
@@ -316,15 +251,13 @@ public void resetAllKeybinds() {
         this.save();
     }
 
-public String getShortcutKey() {
-    if (this.toggleImeKey == -1) {
-        return "";
+    public String getShortcutKey() {
+        if (this.toggleImeKey == -1) return "";
+        return GLFW.glfwGetKeyName(this.toggleImeKey, 0);
     }
-    return GLFW.glfwGetKeyName(this.toggleImeKey, 0);
-}
 
-public void setShortcutKey(String key) {
-    this.toggleImeKey = -1;
-    this.save();
-}
+    public void setShortcutKey(String key) {
+        this.toggleImeKey = -1;
+        this.save();
+    }
 }

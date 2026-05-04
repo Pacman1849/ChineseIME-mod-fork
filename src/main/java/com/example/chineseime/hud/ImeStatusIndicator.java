@@ -11,8 +11,6 @@ public class ImeStatusIndicator {
     private boolean capsLockOn;
     private boolean inShiftMode;
     private boolean visible;
-    private boolean inChatScreen;
-    private boolean dllInitialized;
 
     private static final int BG_NORMAL = 0x99000000;
     private static final int BG_CAPS = 0x994466AA;
@@ -28,19 +26,9 @@ public class ImeStatusIndicator {
         this.capsLockOn = false;
         this.inShiftMode = false;
         this.visible = false;
-        this.inChatScreen = false;
-        this.dllInitialized = false;
     }
 
-    public void setInChatScreen(boolean inChatScreen) {
-        this.inChatScreen = inChatScreen;
-    }
-
-    public void setDllInitialized(boolean initialized) {
-        this.dllInitialized = initialized;
-    }
-
-    public void update(boolean chineseMode, InputMode inputMode, boolean capsLockOn, boolean inShiftMode, boolean isTyping, boolean layoutChanged) {
+    public void update(boolean chineseMode, InputMode inputMode, boolean capsLockOn, boolean inShiftMode) {
         boolean changed = this.chineseMode != chineseMode
             || this.inputMode != inputMode
             || this.capsLockOn != capsLockOn
@@ -90,13 +78,10 @@ public class ImeStatusIndicator {
         int size = (int)(SIZE_1080P / scale);
         int shiftSize = (int)(SHIFT_INDICATOR_SIZE_1080P / scale);
         int margin = (int)(8 / scale);
+        int chatInputTop = scaledH - 22 - 14;
         int x = margin;
-        int y = scaledH - (int)(80 / scale) - size - 0;
+        int y = chatInputTop - 2 - size;
 
-        renderIndicator(ctx, font, x, y, size, shiftSize);
-    }
-
-    private void renderIndicator(DrawContext ctx, TextRenderer font, int x, int y, int size, int shiftSize) {
         int bgColor = (!this.inShiftMode && this.capsLockOn) ? BG_CAPS : BG_NORMAL;
 
         ctx.fill(x, y, x + size, y + size, bgColor);
@@ -116,21 +101,10 @@ public class ImeStatusIndicator {
         }
     }
 
-    public boolean isVisible() {
-        return this.visible;
-    }
-
-    public boolean isChineseMode() {
-        return this.chineseMode;
-    }
-
-    public InputMode getInputMode() {
-        return this.inputMode;
-    }
-
-    public boolean isInShiftMode() {
-        return this.inShiftMode;
-    }
+    public boolean isVisible() { return this.visible; }
+    public boolean isChineseMode() { return this.chineseMode; }
+    public InputMode getInputMode() { return this.inputMode; }
+    public boolean isInShiftMode() { return this.inShiftMode; }
 
     public static int getHeight(float scale) {
         return (int)(SIZE_1080P / scale);
