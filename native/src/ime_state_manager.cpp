@@ -13,6 +13,7 @@ InputMethodType detectInputMethodTypeFromImeId(WORD imeId, LANGID langId) {
         return InputMethodType::ENGLISH;
     }
     switch (imeId) {
+    case 0x0000: return InputMethodType::PINYIN;   // Modern TSF IMEs (Win10/11 MSPY) have imeId=0
     case 0x0001: case 0x0010: case 0xE010: case 0xE020: return InputMethodType::PINYIN;
     case 0x0002: case 0xE011: return InputMethodType::WUBI;
     case 0x0003: case 0xE001: return InputMethodType::ZHUYIN;

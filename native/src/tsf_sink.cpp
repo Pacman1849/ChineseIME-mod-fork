@@ -1,7 +1,6 @@
-#include "tsf_monitor.h"
-#include "ime_state_manager.h"
+#include "tsf_sink.h"
+#include "common.h"
 #include "sta_thread.h"
-#include "jni_callback.h"
 #include <comdef.h>
 #include <algorithm>
 #include <msctf.h>
@@ -9,27 +8,6 @@
 #include <imm.h>
 
 #pragma comment(lib, "imm32.lib")
-
-const GUID GUID_COMPARTMENT_KEYBOARD_INPUTMODE =
-{ 0x5147C989, 0x49A1, 0x46EC, { 0x8F, 0x15, 0x75, 0x9C, 0x45, 0x7D, 0x12, 0x4D } };
-
-const GUID GUID_MS_PINYIN =
-{ 0x81d4e9c9, 0x1d3b, 0x41bc, { 0x9e, 0x6c, 0x4b, 0x40, 0xbf, 0x79, 0xe3, 0x5e } };
-
-const GUID GUID_MS_ZHUYIN =
-{ 0xb115690a, 0xea02, 0x48d5, { 0xa2, 0x31, 0xe3, 0x57, 0x8d, 0x2f, 0x0c, 0x52 } };
-
-const GUID GUID_MS_CANGJIE =
-{ 0x4bdf9f03, 0xc7d3, 0x11d4, { 0xb2, 0xab, 0x00, 0x80, 0xc8, 0x82, 0x68, 0x7e } };
-
-const GUID GUID_MS_WUBI =
-{ 0x82590c13, 0xf4dd, 0x44f4, { 0xba, 0x1d, 0x86, 0x67, 0x24, 0x6f, 0xdf, 0x8e } };
-
-const GUID GUID_MS_SUCHENG =
-{ 0x6024b45f, 0x5c54, 0x11d4, { 0xb9, 0x21, 0x00, 0x80, 0xc8, 0x82, 0x68, 0x7e } };
-
-const GUID GUID_PROP_CANDIDATE =
-{ 0xf3a465f7, 0x6be7, 0x4dfb, { 0x82, 0x3a, 0xcf, 0x59, 0x47, 0x16, 0x86, 0x1c } };
 
 #ifdef CHINESEIME_DEBUG
 #define DEBUG_LOG(format, ...) do { \
@@ -43,18 +21,58 @@ const GUID GUID_PROP_CANDIDATE =
 #define DEBUG_LOG_SIMPLE(msg)
 #endif
 
+#ifndef GUID_COMPARTMENT_KEYBOARD_INPUTMODE
+static const GUID GUID_COMPARTMENT_KEYBOARD_INPUTMODE =
+{ 0x5147C989, 0x49A1, 0x46EC, { 0x8F, 0x15, 0x75, 0x9C, 0x45, 0x7D, 0x12, 0x4D } };
+#endif
+
+// Microsoft Input Method GUIDs
+static const GUID GUID_MS_PINYIN =
+{ 0x81d4e9c9, 0x1d3b, 0x41bc, { 0x9e, 0x6c, 0x4b, 0x40, 0xbf, 0x79, 0xe3, 0x5e } };
+
+static const GUID GUID_MS_ZHUYIN =
+{ 0xb115690a, 0xea02, 0x48d5, { 0xa2, 0x31, 0xe3, 0x57, 0x8d, 0x2f, 0x0c, 0x52 } };
+
+static const GUID GUID_MS_CANGJIE =
+{ 0x4bdf9f03, 0xc7d3, 0x11d4, { 0xb2, 0xab, 0x00, 0x80, 0xc8, 0x82, 0x68, 0x7e } };
+
+static const GUID GUID_MS_WUBI =
+{ 0x82590c13, 0xf4dd, 0x44f4, { 0xba, 0x1d, 0x86, 0x67, 0x24, 0x6f, 0xdf, 0x8e } };
+
+static const GUID GUID_MS_SUCHENG =
+{ 0x6024b45f, 0x5c54, 0x11d4, { 0xb9, 0x21, 0x00, 0x80, 0xc8, 0x82, 0x68, 0x7e } };
+
+#ifndef GUID_PROP_CANDIDATE
+static const GUID GUID_PROP_CANDIDATE =
+{ 0xf3a465f7, 0x6be7, 0x4dfb, { 0x82, 0x3a, 0xcf, 0x59, 0x47, 0x16, 0x86, 0x1c } };
+#endif
+
 namespace chineseime {
 
-TsfMonitor::TsfMonitor() {
-    DEBUG_LOG_SIMPLE(L"[ChineseIME] TsfMonitor created\n");
+InputMethodType detectInputMethodTypeFromImeId(WORD imeId, LANGID langId) {
+    if (langId != 0x0804 && langId != 0x0404 && langId != 0x0C04 && langId != 0x1404) {
+        return InputMethodType::ENGLISH;
+    }
+    switch (imeId) {
+        case 0x0001: case 0x0010: case 0xE010: case 0xE020: return InputMethodType::PINYIN;
+        case 0x0002: case 0xE011: return InputMethodType::WUBI;
+        case 0x0003: case 0xE001: return InputMethodType::ZHUYIN;
+        case 0x0004: case 0xE002: return InputMethodType::CANGJIE;
+        case 0x0005: case 0xE003: return InputMethodType::SUCHENG;
+        default: return InputMethodType::OTHER_CHINESE;
+    }
 }
 
-TsfMonitor::~TsfMonitor() {
+TsfSink::TsfSink() {
+    DEBUG_LOG_SIMPLE(L"[ChineseIME] TsfSink created\n");
+}
+
+TsfSink::~TsfSink() {
     shutdown();
-    DEBUG_LOG_SIMPLE(L"[ChineseIME] TsfMonitor destroyed\n");
+    DEBUG_LOG_SIMPLE(L"[ChineseIME] TsfSink destroyed\n");
 }
 
-bool TsfMonitor::initialize(IUnknown* pThreadMgr) {
+bool TsfSink::initialize(IUnknown* pThreadMgr) {
     if (!pThreadMgr) return false;
 
     HRESULT hr = pThreadMgr->QueryInterface(IID_ITfThreadMgr, (void**)&threadMgr_);
@@ -94,7 +112,7 @@ bool TsfMonitor::initialize(IUnknown* pThreadMgr) {
     return true;
 }
 
-void TsfMonitor::shutdown() {
+void TsfSink::shutdown() {
     unregisterSinks();
 
     if (threadMgrSource_) {
@@ -114,15 +132,18 @@ void TsfMonitor::shutdown() {
         threadMgr_ = nullptr;
     }
 
+    ecReadOnly_ = 0;
+    lastHkl_ = 0;
+    lastChineseMode_ = false;
     currentInputMethod_ = InputMethodType::UNKNOWN;
-    chineseMode_ = false;
 }
 
-void TsfMonitor::refreshState() {
+void TsfSink::refreshState() {
     updateCache();
 }
 
-STDMETHODIMP TsfMonitor::QueryInterface(REFIID riid, void** ppv) {
+// IUnknown
+STDMETHODIMP TsfSink::QueryInterface(REFIID riid, void** ppv) {
     if (!ppv) return E_POINTER;
     if (riid == IID_IUnknown || riid == IID_ITfTextEditSink) {
         *ppv = static_cast<ITfTextEditSink*>(this);
@@ -130,8 +151,6 @@ STDMETHODIMP TsfMonitor::QueryInterface(REFIID riid, void** ppv) {
         *ppv = static_cast<ITfKeyEventSink*>(this);
     } else if (riid == IID_ITfInputProcessorProfileActivationSink) {
         *ppv = static_cast<ITfInputProcessorProfileActivationSink*>(this);
-    } else if (riid == IID_ITfCompartmentEventSink) {
-        *ppv = static_cast<ITfCompartmentEventSink*>(this);
     } else {
         *ppv = nullptr;
         return E_NOINTERFACE;
@@ -140,11 +159,11 @@ STDMETHODIMP TsfMonitor::QueryInterface(REFIID riid, void** ppv) {
     return S_OK;
 }
 
-STDMETHODIMP_(ULONG) TsfMonitor::AddRef() {
+STDMETHODIMP_(ULONG) TsfSink::AddRef() {
     return InterlockedIncrement(&refCount_);
 }
 
-STDMETHODIMP_(ULONG) TsfMonitor::Release() {
+STDMETHODIMP_(ULONG) TsfSink::Release() {
     LONG count = InterlockedDecrement(&refCount_);
     if (count == 0) {
         delete this;
@@ -152,84 +171,95 @@ STDMETHODIMP_(ULONG) TsfMonitor::Release() {
     return count;
 }
 
-STDMETHODIMP TsfMonitor::OnEndEdit(ITfContext* pic, TfEditCookie ecReadOnly, ITfEditRecord* pEditRecord) {
+// ITfTextEditSink
+STDMETHODIMP TsfSink::OnEndEdit(ITfContext* pic, TfEditCookie ecReadOnly, ITfEditRecord* pEditRecord) {
     if (!pic) return E_INVALIDARG;
     ecReadOnly_ = ecReadOnly;
 
-    auto oldState = ImeStateManager::get().getSnapshot();
+    auto oldState = g_cache.snapshot();
     updateCache();
-    auto newState = ImeStateManager::get().getSnapshot();
+    auto newState = g_cache.snapshot();
     notifyStateChanges(oldState, newState);
     return S_OK;
 }
 
-STDMETHODIMP TsfMonitor::OnKeyDown(ITfContext* pic, WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
+// ITfKeyEventSink
+STDMETHODIMP TsfSink::OnKeyDown(ITfContext* pic, WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
     if (pfEaten) *pfEaten = FALSE;
     return S_OK;
 }
 
-STDMETHODIMP TsfMonitor::OnKeyUp(ITfContext* pic, WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
+STDMETHODIMP TsfSink::OnKeyUp(ITfContext* pic, WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
     if (pfEaten) *pfEaten = FALSE;
     return S_OK;
 }
 
-STDMETHODIMP TsfMonitor::OnPreservedKey(ITfContext* pic, REFGUID rguid, BOOL* pfEaten) {
+STDMETHODIMP TsfSink::OnPreservedKey(ITfContext* pic, REFGUID rguid, BOOL* pfEaten) {
     if (pfEaten) *pfEaten = FALSE;
     return S_OK;
 }
 
-STDMETHODIMP TsfMonitor::OnTestKeyDown(ITfContext* pic, WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
+STDMETHODIMP TsfSink::OnTestKeyDown(ITfContext* pic, WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
     if (pfEaten) *pfEaten = FALSE;
     return S_OK;
 }
 
-STDMETHODIMP TsfMonitor::OnTestKeyUp(ITfContext* pic, WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
+STDMETHODIMP TsfSink::OnTestKeyUp(ITfContext* pic, WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
     if (pfEaten) *pfEaten = FALSE;
     return S_OK;
 }
 
-STDMETHODIMP TsfMonitor::OnSetFocus(BOOL fForeground) {
+STDMETHODIMP TsfSink::OnSetFocus(BOOL fForeground) {
     if (fForeground) {
         updateCache();
     }
     return S_OK;
 }
 
-STDMETHODIMP TsfMonitor::OnActivated(DWORD dwProfileType, LANGID langid, REFCLSID clsid,
-                                     REFGUID guidProfile, REFGUID guidCat, HKL hkl, DWORD dwFlags) {
+// ITfInputProcessorProfileActivationSink
+STDMETHODIMP TsfSink::OnActivated(DWORD dwProfileType, LANGID langid, REFCLSID clsid,
+                                   REFGUID guidProfile, REFGUID guidCat, HKL hkl, DWORD dwFlags) {
     updateInputMethodType(langid, clsid, guidProfile);
 
     DEBUG_LOG(L"[ChineseIME] OnActivated: type=%d, langid=0x%04x, hkl=0x%08X, flags=0x%x\n",
-        (int)currentInputMethod_, langid, (DWORD)(DWORD_PTR)hkl, dwFlags);
+              (int)currentInputMethod_, langid, (DWORD)(DWORD_PTR)hkl, dwFlags);
 
     if (dwFlags & TF_IPSINK_FLAG_ACTIVE) {
-        ImeStateManager::get().updateInputMethod(currentInputMethod_);
+        auto state = g_cache.snapshot();
+        state.imeOpen = true;
+        state.layoutChangeCount++;
 
-        bool isChineseLang = (langid == 0x0804 || langid == 0x0404 ||
-                             langid == 0x0C04 || langid == 0x1404);
+        DWORD_PTR hklValue = reinterpret_cast<DWORD_PTR>(hkl);
+        LANGID hklLangId = LOWORD(hklValue);
+        WORD imeId = HIWORD(hklValue);
+
+        state.hkl = static_cast<long>(hklValue);
+
+        // Use GUID detection result first, fallback to HKL detection
+        if (currentInputMethod_ != InputMethodType::UNKNOWN && currentInputMethod_ != InputMethodType::ENGLISH) {
+            state.inputMethodType = currentInputMethod_;
+        } else {
+            state.inputMethodType = detectInputMethodTypeFromImeId(imeId, hklLangId);
+        }
+
+        bool isChineseLang = (hklLangId == 0x0804 || hklLangId == 0x0404 ||
+                             hklLangId == 0x0C04 || hklLangId == 0x1404);
+        state.chineseMode = isChineseLang;
         chineseMode_ = isChineseLang;
-        ImeStateManager::get().updateChineseMode(isChineseLang);
-        ImeStateManager::get().updateImeOpen(true);
 
-        onImeStateChanged(static_cast<int>(currentInputMethod_), isChineseLang);
-    }
+        g_cache.update(state);
 
-    return S_OK;
-}
-
-STDMETHODIMP TsfMonitor::OnChange(REFGUID rguid) {
-    if (IsEqualGUID(rguid, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE)) {
-        bool newChineseMode = detectChineseMode();
-        if (chineseMode_ != newChineseMode) {
-            chineseMode_ = newChineseMode;
-            ImeStateManager::get().updateChineseMode(newChineseMode);
-            onImeStateChanged(static_cast<int>(currentInputMethod_), newChineseMode);
+        // Always notify layout change when activated
+        if (g_onLayoutChange) {
+            g_onLayoutChange(static_cast<int>(state.inputMethodType));
         }
     }
+
     return S_OK;
 }
 
-bool TsfMonitor::detectChineseMode() {
+bool TsfSink::detectChineseMode() {
+    // Try TSF compartment first
     if (threadMgr_) {
         ITfDocumentMgr* docMgr = nullptr;
         HRESULT hr = threadMgr_->GetFocus(&docMgr);
@@ -243,7 +273,7 @@ bool TsfMonitor::detectChineseMode() {
                 ctx->Release();
                 if (SUCCEEDED(hr) && compMgr) {
                     ITfCompartment* comp = nullptr;
-                    hr = compMgr->GetCompartment(GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, &comp);
+                    hr = compMgr->GetCompartment(GUID_COMPARTMENT_KEYBOARD_INPUTMODE, &comp);
                     compMgr->Release();
                     if (SUCCEEDED(hr) && comp) {
                         VARIANT var;
@@ -262,6 +292,7 @@ bool TsfMonitor::detectChineseMode() {
         }
     }
 
+    // Fallback: Use ImmGetConversionStatus
     HWND fgWnd = GetForegroundWindow();
     if (fgWnd) {
         HIMC himc = ImmGetContext(fgWnd);
@@ -280,37 +311,33 @@ bool TsfMonitor::detectChineseMode() {
     return chineseMode_;
 }
 
-void TsfMonitor::updateCache() {
-    ImeStateManager& mgr = ImeStateManager::get();
-
-    bool fallbackChineseMode = false;
+void TsfSink::forceUpdateChineseMode() {
     HWND fgWnd = GetForegroundWindow();
     if (fgWnd) {
         HIMC himc = ImmGetContext(fgWnd);
         if (himc) {
-            if (ImmGetOpenStatus(himc)) {
-                DWORD conversion = 0;
-                DWORD sentence = 0;
-                if (ImmGetConversionStatus(himc, &conversion, &sentence)) {
-                    fallbackChineseMode = (conversion & IME_CMODE_NATIVE) != 0;
-                }
+            DWORD conversion = 0;
+            DWORD sentence = 0;
+            if (ImmGetConversionStatus(himc, &conversion, &sentence)) {
+                ImmReleaseContext(fgWnd, himc);
+                chineseMode_ = (conversion & IME_CMODE_NATIVE) != 0;
+                return;
             }
             ImmReleaseContext(fgWnd, himc);
         }
     }
+    chineseMode_ = true;
+}
 
-    bool effectiveChineseMode = chineseMode_ || fallbackChineseMode;
-    mgr.updateChineseMode(effectiveChineseMode);
+void TsfSink::updateCache() {
+    auto state = g_cache.snapshot();
+    state.isValid = true;
 
     ITfContext* ctx = getCurrentContext();
     bool gotCandidatesFromTsf = false;
     if (ctx) {
-        std::wstring composition;
-        getCompositionString(ctx, composition);
-        std::vector<std::wstring> candidates;
-        int selectedIndex = 0;
-        if (getCandidateList(ctx, candidates, selectedIndex)) {
-            mgr.updateCandidates(composition, candidates, selectedIndex);
+        getCompositionString(ctx, state.composition);
+        if (getCandidateList(ctx, state.candidates, state.selectedIndex)) {
             gotCandidatesFromTsf = true;
         }
         ctx->Release();
@@ -321,101 +348,67 @@ void TsfMonitor::updateCache() {
         if (fgWnd) {
             HIMC himc = ImmGetContext(fgWnd);
             if (himc) {
-                std::wstring composition;
-                LONG compLen = ImmGetCompositionString(himc, GCS_COMPSTR, nullptr, 0);
-                if (compLen <= 0) {
-                    compLen = ImmGetCompositionString(himc, GCS_COMPREADSTR, nullptr, 0);
-                }
-                if (compLen > 0) {
-                    int wcharLen = compLen / sizeof(wchar_t);
-                    wchar_t* compBuf = new wchar_t[wcharLen + 1];
-                    LONG actualLen = ImmGetCompositionString(himc, GCS_COMPSTR, compBuf, compLen);
-                    if (actualLen <= 0) {
-                        actualLen = ImmGetCompositionString(himc, GCS_COMPREADSTR, compBuf, compLen);
-                    }
-                    if (actualLen > 0) {
-                        int actualWcharLen = actualLen / sizeof(wchar_t);
-                        compBuf[actualWcharLen] = 0;
-                        composition = compBuf;
-                    }
+                LONG compLen = ImmGetCompositionString(himc, GCS_COMPREADSTR, nullptr, 0);
+                if (compLen > 0 && state.composition.empty()) {
+                    wchar_t* compBuf = new wchar_t[compLen + 1];
+                    ImmGetCompositionString(himc, GCS_COMPREADSTR, compBuf, compLen);
+                    compBuf[compLen] = 0;
+                    state.composition = compBuf;
                     delete[] compBuf;
                 }
 
-                std::vector<std::wstring> candidates;
-                int selectedIndex = 0;
                 size_t bufSize = ImmGetCandidateList(himc, 0, nullptr, 0);
                 if (bufSize > 0) {
                     CANDIDATELIST* candList = (CANDIDATELIST*)new char[bufSize];
                     ImmGetCandidateList(himc, 0, candList, bufSize);
                     DWORD count = candList->dwCount;
-                    selectedIndex = candList->dwSelection;
+                    state.selectedIndex = candList->dwSelection;
                     if (count > 10) count = 10;
                     for (DWORD j = 0; j < count; j++) {
                         wchar_t* pStr = (wchar_t*)((char*)candList + candList->dwOffset[j]);
-                        candidates.push_back(pStr);
+                        state.candidates.push_back(pStr);
                     }
                     delete[] (char*)candList;
-                }
-
-                char debugBuf[512];
-                sprintf_s(debugBuf, "[ChineseIME] TSF-IMM fallback: comp='%S', candCount=%d, imeOpen=%d\n",
-                    composition.c_str(), (int)candidates.size(),
-                    ImmGetOpenStatus(himc) != 0 ? 1 : 0);
-                OutputDebugStringA(debugBuf);
-
-                if (!candidates.empty()) {
-                    mgr.updateCandidates(composition, candidates, selectedIndex);
-                } else {
-                    mgr.updateCandidates(composition, {}, 0);
                 }
                 ImmReleaseContext(fgWnd, himc);
             }
         }
     }
 
-    HWND hklWnd = GetForegroundWindow();
-    HKL hkl = GetKeyboardLayout(hklWnd ? GetWindowThreadProcessId(hklWnd, nullptr) : 0);
+    HKL hkl = GetKeyboardLayout(0);
     if (hkl) {
         LANGID langId = LOWORD(reinterpret_cast<DWORD_PTR>(hkl));
+        bool isChineseIME = (langId == 0x0804 || langId == 0x0404 ||
+                            langId == 0x0C04 || langId == 0x1404);
+        state.hkl = static_cast<long>(reinterpret_cast<DWORD_PTR>(hkl));
+        state.imeOpen = isChineseIME;
+
         DWORD_PTR hklValue = reinterpret_cast<DWORD_PTR>(hkl);
         WORD imeId = HIWORD(hklValue);
 
-        InputMethodType hklType = detectInputMethodTypeFromImeId(imeId, langId);
-        bool isChineseByHkl = (hklType != InputMethodType::UNKNOWN &&
-            hklType != InputMethodType::ENGLISH);
-
-        char imeDbg[256];
-        sprintf_s(imeDbg, "[ChineseIME] updateCache: HKL=0x%08X imeId=0x%04X hklType=%d tsfType=%d isChinese=%d\n",
-            (DWORD)(DWORD_PTR)hkl, imeId, (int)hklType, (int)currentInputMethod_, isChineseByHkl ? 1 : 0);
-        OutputDebugStringA(imeDbg);
-
+        // GUID detection takes priority
         if (currentInputMethod_ != InputMethodType::UNKNOWN &&
-            currentInputMethod_ != InputMethodType::OTHER_CHINESE) {
-            mgr.updateInputMethod(currentInputMethod_);
-        } else if (isChineseByHkl) {
-            mgr.updateInputMethod(hklType);
+            currentInputMethod_ != InputMethodType::ENGLISH) {
+            state.inputMethodType = currentInputMethod_;
         } else {
-            mgr.updateInputMethod(InputMethodType::ENGLISH);
+            state.inputMethodType = detectInputMethodTypeFromImeId(imeId, langId);
         }
 
-        HWND fgWndImm = GetForegroundWindow();
-        bool imeOpen = false;
-        if (fgWndImm) {
-            HIMC himc = ImmGetContext(fgWndImm);
-            if (himc) {
-                imeOpen = ImmGetOpenStatus(himc) != 0;
-                ImmReleaseContext(fgWndImm, himc);
-            }
-        }
-        mgr.updateImeOpen(imeOpen);
-
-        if (!isChineseByHkl) {
-            mgr.updateChineseMode(false);
+        if (isChineseIME) {
+            bool tsfMode = detectChineseMode();
+            chineseMode_ = tsfMode;
+            state.chineseMode = tsfMode;
+        } else {
+            chineseMode_ = false;
+            state.chineseMode = false;
+            state.imeOpen = false;
         }
     }
+
+    g_cache.update(state);
 }
 
-bool TsfMonitor::registerSinks(ITfContext* pic) {
+bool TsfSink::registerSinks(ITfContext* pic) {
     if (!pic || context_ == pic) return false;
     if (context_) {
         unregisterSinks();
@@ -438,7 +431,7 @@ bool TsfMonitor::registerSinks(ITfContext* pic) {
     return true;
 }
 
-void TsfMonitor::unregisterSinks() {
+void TsfSink::unregisterSinks() {
     if (contextSource_) {
         if (editSinkCookie_ != TF_INVALID_COOKIE) {
             contextSource_->UnadviseSink(editSinkCookie_);
@@ -453,7 +446,11 @@ void TsfMonitor::unregisterSinks() {
     }
 }
 
-ITfContext* TsfMonitor::getCurrentContext() {
+ITfThreadMgr* TsfSink::getThreadMgr() {
+    return threadMgr_;
+}
+
+ITfContext* TsfSink::getCurrentContext() {
     if (!threadMgr_) return nullptr;
     ITfDocumentMgr* docMgr = nullptr;
     HRESULT hr = threadMgr_->GetFocus(&docMgr);
@@ -466,26 +463,36 @@ ITfContext* TsfMonitor::getCurrentContext() {
     return ctx;
 }
 
-void TsfMonitor::notifyStateChanges(const IMEState& oldState, const IMEState& newState) {
+void TsfSink::notifyStateChanges(const IMEState& oldState, const IMEState& newState) {
     if (oldState.composition != newState.composition || oldState.candidates != newState.candidates) {
         std::vector<const wchar_t*> candidatePtrs;
         for (const auto& cand : newState.candidates) {
             candidatePtrs.push_back(cand.c_str());
         }
-        onCandidateChanged(
-            newState.composition.c_str(),
-            candidatePtrs.empty() ? nullptr : candidatePtrs.data(),
-            static_cast<int>(newState.candidates.size()),
-            newState.selectedIndex
-        );
+        if (g_onCandidateUpdate) {
+            g_onCandidateUpdate(
+                newState.composition.c_str(),
+                candidatePtrs.empty() ? nullptr : candidatePtrs.data(),
+                static_cast<int>(newState.candidates.size()),
+                newState.selectedIndex
+            );
+        }
     }
 
-if (oldState.inputMethodType != newState.inputMethodType || oldState.chineseMode != newState.chineseMode) {
-        onImeStateChanged(static_cast<int>(newState.inputMethodType), newState.chineseMode);
+    if (oldState.inputMethodType != newState.inputMethodType) {
+        if (g_onLayoutChange) {
+            g_onLayoutChange(static_cast<int>(newState.inputMethodType));
+        }
+    }
+
+    if (oldState.chineseMode != newState.chineseMode) {
+        if (g_onModeChange) {
+            g_onModeChange(newState.chineseMode);
+        }
     }
 }
 
-bool TsfMonitor::getCompositionString(ITfContext* pic, std::wstring& result) {
+bool TsfSink::getCompositionString(ITfContext* pic, std::wstring& result) {
     result.clear();
     if (!pic) return false;
 
@@ -526,13 +533,16 @@ bool TsfMonitor::getCompositionString(ITfContext* pic, std::wstring& result) {
     return false;
 }
 
-bool TsfMonitor::getCandidateList(ITfContext* pic, std::vector<std::wstring>& candidates, int& selectedIndex) {
+bool TsfSink::getCandidateList(ITfContext* pic, std::vector<std::wstring>& candidates, int& selectedIndex) {
     candidates.clear();
     selectedIndex = 0;
-    return getCandidateListFromProperty(pic, candidates, selectedIndex);
+    if (getCandidateListFromProperty(pic, candidates, selectedIndex)) {
+        return true;
+    }
+    return getCandidateListFromDisplayAttribute(pic, candidates, selectedIndex);
 }
 
-bool TsfMonitor::getCandidateListFromProperty(ITfContext* pic, std::vector<std::wstring>& candidates, int& selectedIndex) {
+bool TsfSink::getCandidateListFromProperty(ITfContext* pic, std::vector<std::wstring>& candidates, int& selectedIndex) {
     candidates.clear();
     selectedIndex = 0;
 
@@ -566,12 +576,53 @@ bool TsfMonitor::getCandidateListFromProperty(ITfContext* pic, std::vector<std::
     return !candidates.empty();
 }
 
-void TsfMonitor::updateInputMethodType(LANGID langid, REFCLSID clsid, REFGUID guidProfile) {
+bool TsfSink::getCandidateListFromDisplayAttribute(ITfContext* pic, std::vector<std::wstring>& candidates, int& selectedIndex) {
+    candidates.clear();
+    selectedIndex = 0;
+
+    ITfProperty* prop = nullptr;
+    HRESULT hr = pic->GetProperty(GUID_PROP_ATTRIBUTE, &prop);
+    if (FAILED(hr) || !prop) {
+        return false;
+    }
+
+    IEnumTfRanges* enumRanges = nullptr;
+    hr = prop->EnumRanges(ecReadOnly_, &enumRanges, nullptr);
+    prop->Release();
+    if (FAILED(hr) || !enumRanges) {
+        return false;
+    }
+
+    ITfRange* range = nullptr;
+    while (enumRanges->Next(1, &range, nullptr) == S_OK) {
+        if (range) {
+            VARIANT var;
+            VariantInit(&var);
+            hr = prop->GetValue(ecReadOnly_, range, &var);
+            if (SUCCEEDED(hr) && var.vt == VT_I4) {
+                wchar_t buffer[64];
+                ULONG fetched = 0;
+                hr = range->GetText(ecReadOnly_, 0, buffer, 63, &fetched);
+                if (SUCCEEDED(hr) && fetched > 0) {
+                    buffer[fetched] = 0;
+                    candidates.push_back(buffer);
+                }
+            }
+            VariantClear(&var);
+            range->Release();
+        }
+    }
+    enumRanges->Release();
+    return !candidates.empty();
+}
+
+void TsfSink::updateInputMethodType(LANGID langid, REFCLSID clsid, REFGUID guidProfile) {
     DEBUG_LOG(L"[ChineseIME] updateInputMethodType: langid=0x%04x\n", langid);
 
     if (langid == 0x0804 || langid == 0x0404 || langid == 0x0C04 || langid == 0x1404) {
         bool detected = false;
 
+        // Try GUID matching first (most reliable)
         if (IsEqualGUID(guidProfile, GUID_MS_PINYIN) || IsEqualGUID(clsid, GUID_MS_PINYIN)) {
             currentInputMethod_ = InputMethodType::PINYIN;
             detected = true;
@@ -602,26 +653,6 @@ void TsfMonitor::updateInputMethodType(LANGID langid, REFCLSID clsid, REFGUID gu
         currentInputMethod_ = InputMethodType::ENGLISH;
         DEBUG_LOG_SIMPLE(L"[ChineseIME] -> ENGLISH\n");
     }
-}
-
-void TsfMonitor::queryCurrentInputMethod() {
-    ITfInputProcessorProfiles* profiles = nullptr;
-    HRESULT hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr,
-        CLSCTX_INPROC_SERVER, IID_ITfInputProcessorProfiles, (void**)&profiles);
-    if (FAILED(hr)) return;
-
-    LANGID langid;
-    CLSID clsid;
-    GUID guidProfile;
-    hr = profiles->GetActiveLanguageProfile(clsid, &langid, &guidProfile);
-    if (SUCCEEDED(hr)) {
-        updateInputMethodType(langid, clsid, guidProfile);
-        char buf[256];
-        sprintf_s(buf, "[ChineseIME] queryCurrentInputMethod: langid=0x%04x, type=%d\n",
-            langid, (int)currentInputMethod_);
-        OutputDebugStringA(buf);
-    }
-    profiles->Release();
 }
 
 } // namespace chineseime

@@ -7,10 +7,10 @@ import net.minecraft.client.gui.DrawContext;
 
 public class ImeStatusIndicator {
     private boolean chineseMode = true;
-    private InputMode inputMode;
-    private boolean capsLockOn;
-    private boolean inShiftMode;
-    private boolean visible;
+    private InputMode inputMode = InputMode.PINYIN;
+    private boolean capsLockOn = false;
+    private boolean inShiftMode = false;
+    private boolean visible = false;
 
     private static final int BG_NORMAL = 0x99000000;
     private static final int BG_CAPS = 0x994466AA;
@@ -29,13 +29,15 @@ public class ImeStatusIndicator {
     }
 
     public void update(boolean chineseMode, InputMode inputMode, boolean capsLockOn, boolean inShiftMode) {
+        InputMode safeInputMode = (inputMode != null) ? inputMode : InputMode.OTHER;
+
         boolean changed = this.chineseMode != chineseMode
-            || this.inputMode != inputMode
+            || this.inputMode != safeInputMode
             || this.capsLockOn != capsLockOn
             || this.inShiftMode != inShiftMode;
 
         this.chineseMode = chineseMode;
-        this.inputMode = inputMode;
+        this.inputMode = safeInputMode;
         this.capsLockOn = capsLockOn;
         this.inShiftMode = inShiftMode;
         this.visible = true;
@@ -47,6 +49,10 @@ public class ImeStatusIndicator {
         }
     }
 
+    public void setInChatScreen(boolean inChat) {
+        if (inChat) this.visible = true;
+    }
+
     public void hide() {
         this.visible = false;
     }
@@ -56,9 +62,11 @@ public class ImeStatusIndicator {
             case LATIN -> "En";
             case PINYIN -> "拼";
             case ZHUYIN -> "注";
-            case CANGJIE -> "仓";
+            case CANGJIE -> "倉";
             case SUCHENG -> "速";
             case WUBI -> "五";
+            case OTHER -> "中";
+            case YUEPIN -> "粤";
             default -> "?";
         };
     }
@@ -89,14 +97,16 @@ public class ImeStatusIndicator {
 
         String text = this.getDisplayText();
         int textWidth = font.getWidth(text);
-        int textX = x + (size - textWidth) / 2;
-        int textY = y + (size - font.fontHeight) / 2 + 1;
-        ctx.drawText(font, text, textX, textY, TEXT_COLOR, false);
+        float textX = x + (size - textWidth) / 2f;
+        float textY = y + (size - font.fontHeight) / 2f;
+        ctx.getMatrices().push();
+        ctx.getMatrices().translate(textX, textY, 0);
+        ctx.drawText(font, text, 0, 0, TEXT_COLOR, false);
+        ctx.getMatrices().pop();
 
         if (this.inShiftMode) {
-            int shiftPad = (int)(2 / ((float) size / SIZE_1080P));
-            int shiftX = x + size - shiftSize - shiftPad;
-            int shiftY = y + shiftPad;
+            int shiftX = x + size - shiftSize - 1;
+            int shiftY = y + 1;
             ctx.fill(shiftX, shiftY, shiftX + shiftSize, shiftY + shiftSize, SHIFT_INDICATOR);
         }
     }
@@ -105,6 +115,7 @@ public class ImeStatusIndicator {
     public boolean isChineseMode() { return this.chineseMode; }
     public InputMode getInputMode() { return this.inputMode; }
     public boolean isInShiftMode() { return this.inShiftMode; }
+    public boolean isCapsLockOn() { return this.capsLockOn; }
 
     public static int getHeight(float scale) {
         return (int)(SIZE_1080P / scale);

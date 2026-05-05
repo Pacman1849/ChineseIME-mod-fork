@@ -79,25 +79,23 @@ chineseime::InputMethodType DetectInputMethodTypeFromHkl(HKL hkl) {
 }
 
 void PollKeyboardState() {
-    BYTE keyboardState[256] = {0};
-    if (GetKeyboardState(keyboardState)) {
-        bool capsLockOn = (keyboardState[VK_CAPITAL] & 0x01) != 0;
-        bool shiftPressed = (keyboardState[VK_SHIFT] & 0x80) != 0;
-        static bool lastCaps = false;
-        if (lastCaps != capsLockOn) {
-            char buf[64];
-            sprintf_s(buf, "[ChineseIME] CapsLock changed: %d -> %d\n", lastCaps ? 1 : 0, capsLockOn ? 1 : 0);
-            OutputDebugStringA(buf);
-            lastCaps = capsLockOn;
-        }
-        chineseime::ImeStateManager::get().updateKeyboardState(capsLockOn, shiftPressed);
+    bool capsLockOn = (GetAsyncKeyState(VK_CAPITAL) & 0x8000) != 0;
+    bool shiftPressed = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+    static bool lastCaps = false;
+    if (lastCaps != capsLockOn) {
+        char buf[64];
+        sprintf_s(buf, "[ChineseIME] CapsLock changed: %d -> %d\n", lastCaps ? 1 : 0, capsLockOn ? 1 : 0);
+        OutputDebugStringA(buf);
+        lastCaps = capsLockOn;
     }
+    chineseime::ImeStateManager::get().updateKeyboardState(capsLockOn, shiftPressed);
 }
 
 void PollIMEState() {
     chineseime::ImeStateManager& mgr = chineseime::ImeStateManager::get();
 
-    HKL hkl = GetKeyboardLayout(0);
+    HWND hklWnd = GetForegroundWindow();
+    HKL hkl = GetKeyboardLayout(hklWnd ? GetWindowThreadProcessId(hklWnd, nullptr) : 0);
     if (!hkl) return;
 
     LANGID langId = LOWORD(reinterpret_cast<DWORD_PTR>(hkl));
@@ -207,7 +205,8 @@ __declspec(dllexport) void SetCallbacks(void* candidateUpdate, void* layoutChang
 __declspec(dllexport) int StartListen(void* hwnd) {
     if (g_tsfInitialized.load()) return 1;
 
-    HKL hkl = GetKeyboardLayout(0);
+    HWND fgWnd = GetForegroundWindow();
+    HKL hkl = GetKeyboardLayout(fgWnd ? GetWindowThreadProcessId(fgWnd, nullptr) : 0);
     if (hkl) {
         chineseime::InputMethodType type = DetectInputMethodTypeFromHkl(hkl);
         chineseime::ImeStateManager::get().updateInputMethod(type);
@@ -272,7 +271,8 @@ __declspec(dllexport) int StartTsfListen(void) {
 
     g_tsfInitialized.store(true);
 
-    HKL hkl = GetKeyboardLayout(0);
+    HWND initWnd = GetForegroundWindow();
+    HKL hkl = GetKeyboardLayout(initWnd ? GetWindowThreadProcessId(initWnd, nullptr) : 0);
     if (hkl) {
         LANGID langId = LOWORD(reinterpret_cast<DWORD_PTR>(hkl));
         chineseime::InputMethodType type = DetectInputMethodTypeFromHkl(hkl);
@@ -485,6 +485,7 @@ __declspec(dllexport) void SetTargetWindow(void* hwnd) {
 }
 
 void RefreshImeState(void) {
+    PollKeyboardState();
     if (g_tsfMonitor) {
         g_tsfMonitor->refreshState();
     } else if (g_imm32Monitor) {
@@ -507,7 +508,8 @@ int HasLayoutChanged(void) {
 }
 
 long GetKeyboardLayoutHKL(void) {
-    HKL hkl = GetKeyboardLayout(0);
+    HWND fgWnd = GetForegroundWindow();
+    HKL hkl = GetKeyboardLayout(fgWnd ? GetWindowThreadProcessId(fgWnd, nullptr) : 0);
     return (long)reinterpret_cast<DWORD_PTR>(hkl);
 }
 

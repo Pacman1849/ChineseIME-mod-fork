@@ -233,21 +233,21 @@ private static void loadNative() {
         };
     }
 
-    public static String getInputMethodTypeString() {
-        return getInputMethodTypeString(getInputMethodType());
-    }
-
     public static String getInputMethodTypeString(int type) {
         return switch (type) {
             case IME_TYPE_ENGLISH -> "En";
             case IME_TYPE_PINYIN -> "拼";
             case IME_TYPE_ZHUYIN -> "注";
-            case IME_TYPE_CANGJIE -> "仓";
+            case IME_TYPE_CANGJIE -> "倉";
             case IME_TYPE_WUBI -> "五";
             case IME_TYPE_SUCHENG -> "速";
-            case IME_TYPE_OTHER_CHINESE -> "?";
+            case IME_TYPE_OTHER_CHINESE -> "中";
             default -> "?";
         };
+    }
+
+    public static String getInputMethodTypeString() {
+        return getInputMethodTypeString(getInputMethodType());
     }
 
     public interface NativeLibrary extends StdCallLibrary {
