@@ -4,6 +4,8 @@ import com.example.chineseime.ChineseIMEInitializer;
 import com.example.chineseime.engine.InputMode;
 import com.example.chineseime.hud.CandidateHud;
 import com.example.chineseime.hud.ImeStatusIndicator;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.gui.screen.ChatScreen;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -19,6 +21,9 @@ public class WindowsIMEBridgeNative {
     private List<String> prevCandidates = new ArrayList<>();
     private String prevComposition = "";
     private int tickCounter = 0;
+    private boolean prevHudShown = false;
+    private boolean wasInEnglishMode = false;
+    private int ticksSinceModeSwitch = 0;
 
     public WindowsIMEBridgeNative(CandidateHud candidateHud) {
         this.candidateHud = candidateHud;
@@ -67,23 +72,41 @@ public class WindowsIMEBridgeNative {
             || prevCapsLock != capsLockOn
             || prevShiftMode != inShiftMode;
 
+        if (!prevChineseMode && chineseMode) {
+            wasInEnglishMode = true;
+            ticksSinceModeSwitch = 0;
+        }
+        if (wasInEnglishMode) {
+            ticksSinceModeSwitch++;
+        }
+
         prevInputMethodType = inputMethodType;
         prevChineseMode = chineseMode;
         prevCapsLock = capsLockOn;
         prevShiftMode = inShiftMode;
 
+        boolean inChat = isChatScreenOpen();
         boolean candidatesChanged = !prevCandidates.equals(candidates) || !prevComposition.equals(composition);
         if (candidatesChanged) {
             prevCandidates = new ArrayList<>(candidates);
             prevComposition = composition;
 
-            if (candidateHud != null) {
+            if (candidateHud != null && inChat) {
                 if (!candidates.isEmpty()) {
+                    wasInEnglishMode = false;
                     candidateHud.updateCandidatesKeepSelection(
                         candidates, composition, selectedIndex, candidateHud.getPage());
                 } else if (!composition.isEmpty()) {
-                    candidateHud.updateCandidatesKeepSelection(
-                        new ArrayList<>(), composition, 0, 0);
+                    if (wasInEnglishMode && ticksSinceModeSwitch < 10) {
+                    } else {
+                        wasInEnglishMode = false;
+                        List<String> fallback = com.example.chineseime.engine.PinyinDictionary.getSuggestions(composition);
+                        if (!fallback.isEmpty()) {
+                            candidateHud.updateCandidatesKeepSelection(fallback, composition, 0, 0);
+                        } else {
+                            candidateHud.updateCandidatesKeepSelection(new ArrayList<>(), composition, 0, 0);
+                        }
+                    }
                 } else {
                     candidateHud.clearInput();
                 }
@@ -91,20 +114,28 @@ public class WindowsIMEBridgeNative {
         }
 
         tickCounter++;
-        if (tickCounter % 20 == 0) {
-            ChineseIMEInitializer.LOGGER.info("[ChineseIME] Poll: IME={}({}), CMode={}, Caps={}, ShiftM={}, ImeOpen={}, CandCnt={}, Comp='{}', stateChg={}, candChg={}, hudVis={}",
+        if (tickCounter % 600 == 0 || (tickCounter % 60 == 0 && !candidates.isEmpty())) {
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] Poll: IME={}({}), CMode={}, Caps={}, ShiftM={}, ImeOpen={}, CandCnt={}, Comp='{}'",
                 currentMode, inputMethodType, chineseMode, capsLockOn, inShiftMode, imeOpen,
-                candidates.size(), composition, stateChanged, candidatesChanged,
-                candidateHud != null ? candidateHud.isVisible() : "null");
+                candidates.size(), composition);
         }
 
-        if (stateChanged && statusIndicator != null) {
-            statusIndicator.update(chineseMode, currentMode, capsLockOn, inShiftMode);
-        }
-
-        if (candidateHud != null && candidateHud.isVisible() && statusIndicator != null) {
+        boolean hudShown = candidateHud != null && candidateHud.isVisible();
+        if (hudShown && statusIndicator != null) {
             statusIndicator.hide();
+        } else if (statusIndicator != null) {
+            if (stateChanged) {
+                statusIndicator.update(chineseMode, currentMode, capsLockOn, inShiftMode);
+            } else if (prevHudShown) {
+                statusIndicator.show();
+            }
         }
+        prevHudShown = hudShown;
+    }
+
+    private static boolean isChatScreenOpen() {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        return mc != null && mc.currentScreen instanceof ChatScreen;
     }
 
     public void shutdown() {
@@ -117,7 +148,13 @@ public class WindowsIMEBridgeNative {
 
     public boolean isImeOpen() { return NativeImeBridge.getImeOpenStatus(); }
     public boolean isChineseMode() { return NativeImeBridge.isChineseMode(); }
-    public boolean isCapsLockOn() { return NativeImeBridge.getCapsLockState(); }
+    public boolean isCapsLockOn() {
+        boolean raw = NativeImeBridge.getCapsLockState();
+        if (tickCounter % 20 == 0) {
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] CapsLock raw JNA call = {}", raw);
+        }
+        return raw;
+    }
     public boolean isInShiftMode() { return NativeImeBridge.getShiftMode(); }
     public InputMode getDetectedInputMode() { return NativeImeBridge.getInputMethodTypeAsEnum(); }
     public boolean hasLayoutChanged() { return false; }

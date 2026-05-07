@@ -25,7 +25,8 @@ namespace chineseime {
 class TsfMonitor : public ITfTextEditSink,
                    public ITfKeyEventSink,
                    public ITfInputProcessorProfileActivationSink,
-                   public ITfCompartmentEventSink {
+                   public ITfCompartmentEventSink,
+                   public ITfUIElementSink {
 public:
     TsfMonitor();
     virtual ~TsfMonitor();
@@ -55,6 +56,10 @@ public:
 
     STDMETHODIMP OnChange(REFGUID rguid) override;
 
+    STDMETHODIMP BeginUIElement(DWORD dwUIElementId, BOOL* pbShow) override;
+    STDMETHODIMP UpdateUIElement(DWORD dwUIElementId) override;
+    STDMETHODIMP EndUIElement(DWORD dwUIElementId) override;
+
 private:
     void updateInputMethodType(LANGID langid, REFCLSID clsid, REFGUID guidProfile);
     bool detectChineseMode();
@@ -75,7 +80,6 @@ private:
     ITfContext* context_ = nullptr;
     ITfSource* contextSource_ = nullptr;
     ITfSource* threadMgrSource_ = nullptr;
-    ITfCompartment* openCloseCompartment_ = nullptr;
 
     DWORD editSinkCookie_ = TF_INVALID_COOKIE;
     DWORD keyEventSinkCookie_ = TF_INVALID_COOKIE;

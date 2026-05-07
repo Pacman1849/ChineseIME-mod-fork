@@ -69,6 +69,8 @@ public class NativeImeBridge {
         INSTANCE.SetCallbacks(candidateCallback, layoutCallback, modeCallback, keyboardCallback);
     }
 
+    private static Path cachedDllPath = null;
+
     public static synchronized NativeLibrary getInstance() {
         if (!loadAttempted) {
             loadAttempted = true;
@@ -83,23 +85,30 @@ private static void loadNative() {
         String osArch = System.getProperty("os.arch");
         String nativesPath = "/META-INF/natives/" + osArch + "/chineseime_native.dll";
         ChineseIMEInitializer.LOGGER.info("[ChineseIME] Looking for DLL at: {}", nativesPath);
-        InputStream dllStream = NativeImeBridge.class.getResourceAsStream(nativesPath);
-        ChineseIMEInitializer.LOGGER.info("[ChineseIME] DLL stream: {}", dllStream != null ? "found" : "null");
-        if (dllStream != null) {
-            Path tempDir = Files.createTempDirectory("chineseime_native");
-            Path dllPath = tempDir.resolve("chineseime_native.dll");
-            Files.copy(dllStream, dllPath, StandardCopyOption.REPLACE_EXISTING);
-            dllStream.close();
-            dllPath.toFile().deleteOnExit();
-            tempDir.toFile().deleteOnExit();
-            ChineseIMEInitializer.LOGGER.info("[ChineseIME] Loading DLL from: {}", dllPath);
-            INSTANCE = Native.load(dllPath.toString(), NativeLibrary.class, W32APIOptions.UNICODE_OPTIONS);
-            loaded = true;
-            ChineseIMEInitializer.LOGGER.info("[ChineseIME] DLL loaded successfully");
+
+        if (cachedDllPath == null) {
+            InputStream dllStream = NativeImeBridge.class.getResourceAsStream(nativesPath);
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] DLL stream: {}", dllStream != null ? "found" : "null");
+            if (dllStream != null) {
+                Path tempDir = Files.createTempDirectory("chineseime_native");
+                cachedDllPath = tempDir.resolve("chineseime_native.dll");
+                Files.copy(dllStream, cachedDllPath, StandardCopyOption.REPLACE_EXISTING);
+                dllStream.close();
+                cachedDllPath.toFile().deleteOnExit();
+                tempDir.toFile().deleteOnExit();
+                ChineseIMEInitializer.LOGGER.info("[ChineseIME] DLL extracted to: {}", cachedDllPath);
+            } else {
+                ChineseIMEInitializer.LOGGER.warn("[ChineseIME] DLL not found in JAR at {}, using fallback", nativesPath);
+                loaded = false;
+                return;
+            }
         } else {
-            ChineseIMEInitializer.LOGGER.warn("[ChineseIME] DLL not found in JAR at {}, using fallback", nativesPath);
-            loaded = false;
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] Using cached DLL: {}", cachedDllPath);
         }
+
+        INSTANCE = Native.load(cachedDllPath.toString(), NativeLibrary.class, W32APIOptions.UNICODE_OPTIONS);
+        loaded = true;
+        ChineseIMEInitializer.LOGGER.info("[ChineseIME] DLL loaded successfully");
     } catch (Exception e) {
         ChineseIMEInitializer.LOGGER.warn("[ChineseIME] DLL load failed: {} - using fallback", e.getMessage());
         e.printStackTrace();
@@ -233,21 +242,21 @@ private static void loadNative() {
         };
     }
 
-    public static String getInputMethodTypeString() {
-        return getInputMethodTypeString(getInputMethodType());
-    }
-
     public static String getInputMethodTypeString(int type) {
         return switch (type) {
             case IME_TYPE_ENGLISH -> "En";
             case IME_TYPE_PINYIN -> "拼";
             case IME_TYPE_ZHUYIN -> "注";
-            case IME_TYPE_CANGJIE -> "仓";
+            case IME_TYPE_CANGJIE -> "倉";
             case IME_TYPE_WUBI -> "五";
             case IME_TYPE_SUCHENG -> "速";
-            case IME_TYPE_OTHER_CHINESE -> "?";
+            case IME_TYPE_OTHER_CHINESE -> "中";
             default -> "?";
         };
+    }
+
+    public static String getInputMethodTypeString() {
+        return getInputMethodTypeString(getInputMethodType());
     }
 
     public interface NativeLibrary extends StdCallLibrary {

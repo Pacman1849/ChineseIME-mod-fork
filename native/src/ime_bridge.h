@@ -22,7 +22,8 @@ CHINESEIME_API int IsListening(void);
 // State query (legacy WinEvent hook)
 CHINESEIME_API int IsChineseMode(void);
 CHINESEIME_API int HasLayoutChanged(void);
-CHINESEIME_API long GetKeyboardLayoutHKL(void);
+// CHINESEIME_API must not be used here because the function uses __declspec(dllexport) directly
+long GetKeyboardLayoutHKL(void);
 CHINESEIME_API const char* GetDllVersion(void);
 
 // TSF-based IME data (new API)

@@ -107,6 +107,14 @@ private void syncFromWindows() {
         hud.selectNext();
     }
 
+    public void prevPage() {
+        hud.prevPage();
+    }
+
+    public void nextPage() {
+        hud.nextPage();
+    }
+
     public String confirmSelection() {
         String selected = hud.getSelected();
         hud.clearInput();

@@ -15,6 +15,11 @@ public class CandidateHud {
     private boolean visible = false;
     private int x, y, width, height;
 
+    private int[] cachedItemWidths = null;
+    private int cachedItemWidthsStart = -1;
+    private int cachedItemWidthsEnd = -1;
+    private float cachedScale = -1f;
+
     private static final int BG = 0xB3000000;
     private static final int SEL_BG = 0x66B1B4B6;
     private static final int SEL_BAR = 0xFF4488FF;
@@ -45,7 +50,7 @@ public class CandidateHud {
         this.composition = composition != null ? composition : "";
         this.selected = 0;
         this.page = 0;
-        this.visible = !this.candidates.isEmpty();
+        this.visible = !this.candidates.isEmpty() || !this.composition.isEmpty();
     }
 
     public void updateCandidatesKeepSelection(List<String> candidates, String composition, int selectedIndex, int page) {
@@ -59,7 +64,7 @@ public class CandidateHud {
             int newPage = this.selected / this.perPage;
             if (newPage != this.page) this.page = newPage;
         }
-        this.visible = !this.candidates.isEmpty();
+        this.visible = !this.candidates.isEmpty() || !this.composition.isEmpty();
     }
 
     public void clear() {
@@ -72,18 +77,20 @@ public class CandidateHud {
 
     public void selectPrevious() {
         if (this.candidates.isEmpty()) return;
-        if (this.selected > 0) {
-            this.selected--;
-            this.page = this.selected / this.perPage;
+        this.selected--;
+        if (this.selected < 0) {
+            this.selected = this.candidates.size() - 1;
         }
+        this.page = this.selected / this.perPage;
     }
 
     public void selectNext() {
         if (this.candidates.isEmpty()) return;
-        if (this.selected < this.candidates.size() - 1) {
-            this.selected++;
-            this.page = this.selected / this.perPage;
+        this.selected++;
+        if (this.selected >= this.candidates.size()) {
+            this.selected = 0;
         }
+        this.page = this.selected / this.perPage;
     }
 
     public void prevPage() {
@@ -123,6 +130,19 @@ public class CandidateHud {
     public int getY() { return this.y; }
     public int getWidth() { return this.width; }
     public int getHeight() { return this.height; }
+
+    public float getScaleForClick() {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc == null) return 2.0f;
+        int physicalW = mc.getWindow().getWidth();
+        int scaledW = mc.getWindow().getScaledWidth();
+        return physicalW > 0 ? (float) physicalW / (float) scaledW : 2.0f;
+    }
+
+    public void onMouseRelease(double mouseX, double mouseY) {
+        this.prevArrowHovered = false;
+        this.nextArrowHovered = false;
+    }
 
     public boolean handleClick(double mouseX, double mouseY, float scale) {
         if (!this.visible) return false;

@@ -33,6 +33,8 @@ public class ChineseIMEInitializer implements ClientModInitializer {
     private boolean prevRightPressed = false;
     private boolean prevUpPressed = false;
     private boolean prevDownPressed = false;
+    private boolean prevBracketLeftPressed = false;
+    private boolean prevBracketRightPressed = false;
 
     @Override
     public void onInitializeClient() {
@@ -83,6 +85,23 @@ public class ChineseIMEInitializer implements ClientModInitializer {
             } else {
                 this.ctrlShiftTPressed = false;
             }
+
+            boolean bracketLeftPressed = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_LEFT_BRACKET) == GLFW.GLFW_PRESS;
+            boolean bracketRightPressed = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_RIGHT_BRACKET) == GLFW.GLFW_PRESS;
+            if (this.imeManager.hasInput()) {
+                if ((leftPressed && !prevLeftPressed) || (upPressed && !prevUpPressed)) {
+                    this.imeManager.selectPrev();
+                } else if ((rightPressed && !prevRightPressed) || (downPressed && !prevDownPressed)) {
+                    this.imeManager.selectNext();
+                }
+                if (bracketLeftPressed && !prevBracketLeftPressed) {
+                    this.imeManager.prevPage();
+                } else if (bracketRightPressed && !prevBracketRightPressed) {
+                    this.imeManager.nextPage();
+                }
+            }
+            prevBracketLeftPressed = bracketLeftPressed;
+            prevBracketRightPressed = bracketRightPressed;
         });
 
         LOGGER.info("[ChineseIME] Initialization complete! Platform: {}, isWindowsSync: {}", PlatformIMEManager.getPlatform(), this.imeManager.isWindowsSync());

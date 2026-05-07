@@ -65,13 +65,19 @@ chineseime::InputMethodType DetectInputMethodTypeFromHkl(HKL hkl) {
             WCHAR layoutLow = klName[0] ? klName[7] : 0;
             WCHAR layoutHigh = klName[0] ? klName[6] : 0;
             switch (layoutLow) {
-            case '1': case '2': case '3': case '4': case '5':
+            case '0': case '1': case '2': case '3': case '4':
+            case '5': case '6': case '7': case '8': case '9':
                 type = chineseime::detectInputMethodTypeFromImeId(
                     static_cast<WORD>(layoutLow - L'0' + ((layoutHigh - L'0') << 4)), langId);
                 break;
-            case 'A': case 'B': case 'C': case 'D': case 'E':
-            case 'a': case 'b': case 'c': case 'd': case 'e':
-                return chineseime::InputMethodType::OTHER_CHINESE;
+            case 'A': case 'B': case 'C': case 'D': case 'E': case 'F':
+            case 'a': case 'b': case 'c': case 'd': case 'e': case 'f': {
+                WORD lowNibble = (layoutLow >= L'a') ? (WORD)(layoutLow - L'a' + 10) : (WORD)(layoutLow - L'A' + 10);
+                WORD highNibble = (layoutHigh >= L'a') ? (WORD)(layoutHigh - L'a' + 10) : (WORD)(layoutHigh - L'A' + 10);
+                type = chineseime::detectInputMethodTypeFromImeId(
+                    static_cast<WORD>(lowNibble + (highNibble << 4)), langId);
+                break;
+            }
             }
         }
     }
@@ -79,43 +85,33 @@ chineseime::InputMethodType DetectInputMethodTypeFromHkl(HKL hkl) {
 }
 
 void PollKeyboardState() {
-    BYTE keyboardState[256] = {0};
-    if (GetKeyboardState(keyboardState)) {
-        bool capsLockOn = (keyboardState[VK_CAPITAL] & 0x01) != 0;
-        bool shiftPressed = (keyboardState[VK_SHIFT] & 0x80) != 0;
-        static bool lastCaps = false;
-        if (lastCaps != capsLockOn) {
-            char buf[64];
-            sprintf_s(buf, "[ChineseIME] CapsLock changed: %d -> %d\n", lastCaps ? 1 : 0, capsLockOn ? 1 : 0);
-            OutputDebugStringA(buf);
-            lastCaps = capsLockOn;
+    bool capsLockOn = false;
+    bool shiftPressed = false;
+
+    HWND fgWnd = GetForegroundWindow();
+    if (fgWnd) {
+        DWORD fgThreadId = GetWindowThreadProcessId(fgWnd, nullptr);
+        DWORD pollThreadId = GetCurrentThreadId();
+        if (fgThreadId != pollThreadId) {
+            AttachThreadInput(pollThreadId, fgThreadId, TRUE);
         }
-        chineseime::ImeStateManager::get().updateKeyboardState(capsLockOn, shiftPressed);
+
+        capsLockOn = (GetKeyState(VK_CAPITAL) & 0x0001) != 0;
+        shiftPressed = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+
+        if (fgThreadId != pollThreadId) {
+            AttachThreadInput(pollThreadId, fgThreadId, FALSE);
+        }
+    } else {
+        capsLockOn = (GetKeyState(VK_CAPITAL) & 0x0001) != 0;
+        shiftPressed = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
     }
+
+    chineseime::ImeStateManager::get().updateKeyboardState(capsLockOn, shiftPressed);
 }
 
 void PollIMEState() {
     chineseime::ImeStateManager& mgr = chineseime::ImeStateManager::get();
-
-    HKL hkl = GetKeyboardLayout(0);
-    if (!hkl) return;
-
-    LANGID langId = LOWORD(reinterpret_cast<DWORD_PTR>(hkl));
-    DWORD_PTR hklValue = reinterpret_cast<DWORD_PTR>(hkl);
-    WORD imeId = HIWORD(hklValue);
-
-    bool isChineseLang = IsChineseLangId(langId);
-
-    if (!isChineseLang) {
-        mgr.updateInputMethod(chineseime::InputMethodType::ENGLISH);
-        mgr.updateChineseMode(false);
-        mgr.updateImeOpen(false);
-        mgr.updateCandidates(L"", {}, 0);
-        return;
-    }
-
-    chineseime::InputMethodType imeType = DetectInputMethodTypeFromHkl(hkl);
-    mgr.updateInputMethod(imeType);
 
     HWND fgWnd = g_targetWindow;
     if (!fgWnd) fgWnd = GetForegroundWindow();
@@ -139,14 +135,45 @@ void PollIMEState() {
     mgr.updateImeOpen(imeOpen);
 
     bool chineseMode = false;
-    if (imeOpen) {
-        DWORD conversion = 0;
-        DWORD sentence = 0;
-        if (ImmGetConversionStatus(himc, &conversion, &sentence)) {
-            chineseMode = (conversion & IME_CMODE_NATIVE) != 0;
-        }
+    DWORD conversion = 0;
+    DWORD sentence = 0;
+    if (ImmGetConversionStatus(himc, &conversion, &sentence)) {
+        chineseMode = (conversion & IME_CMODE_NATIVE) != 0;
+    }
+    if (!imeOpen) {
+        chineseMode = false;
     }
     mgr.updateChineseMode(chineseMode);
+
+    HKL hkl = GetKeyboardLayout(0);
+    chineseime::InputMethodType detectedType = chineseime::InputMethodType::UNKNOWN;
+    if (hkl) {
+        detectedType = DetectInputMethodTypeFromHkl(hkl);
+    }
+
+    auto cachedType = mgr.getSnapshot().inputMethodType;
+    bool tsfHasSetType = (cachedType != chineseime::InputMethodType::UNKNOWN &&
+                          cachedType != chineseime::InputMethodType::ENGLISH);
+    if (!imeOpen) {
+        if (!tsfHasSetType) {
+            mgr.updateInputMethod(chineseime::InputMethodType::ENGLISH);
+        }
+    } else {
+        if (tsfHasSetType) {
+            if (detectedType != chineseime::InputMethodType::UNKNOWN &&
+                detectedType != chineseime::InputMethodType::ENGLISH &&
+                detectedType != cachedType) {
+                mgr.updateInputMethod(detectedType);
+            }
+        } else {
+            if (detectedType != chineseime::InputMethodType::UNKNOWN &&
+                detectedType != chineseime::InputMethodType::ENGLISH) {
+                mgr.updateInputMethod(detectedType);
+            } else {
+                mgr.updateInputMethod(chineseime::InputMethodType::PINYIN);
+            }
+        }
+    }
 
     std::wstring composition;
     LONG compLen = ImmGetCompositionString(himc, GCS_COMPSTR, nullptr, 0);
@@ -155,33 +182,40 @@ void PollIMEState() {
     }
     if (compLen > 0) {
         int wcharLen = compLen / sizeof(wchar_t);
-        wchar_t* compBuf = new wchar_t[wcharLen + 1];
-        LONG actualLen = ImmGetCompositionString(himc, GCS_COMPSTR, compBuf, compLen);
+        std::vector<wchar_t> compBuf(wcharLen + 1);
+        LONG actualLen = ImmGetCompositionString(himc, GCS_COMPSTR, compBuf.data(), compLen);
         if (actualLen <= 0) {
-            actualLen = ImmGetCompositionString(himc, GCS_COMPREADSTR, compBuf, compLen);
+            actualLen = ImmGetCompositionString(himc, GCS_COMPREADSTR, compBuf.data(), compLen);
         }
         if (actualLen > 0) {
             int actualWcharLen = actualLen / sizeof(wchar_t);
             compBuf[actualWcharLen] = 0;
-            composition = compBuf;
+            composition.assign(compBuf.data(), actualWcharLen);
         }
-        delete[] compBuf;
     }
 
     std::vector<std::wstring> candidates;
     int selectedIndex = 0;
     size_t bufSize = ImmGetCandidateList(himc, 0, nullptr, 0);
+
+    char dbgBuf[256];
+    sprintf_s(dbgBuf, "[ChineseIME] PollIME: fgWnd=0x%X, himc=0x%X, bufSize=%zu, imeOpen=%d, compLen=%d\n",
+        (DWORD)(DWORD_PTR)fgWnd, (DWORD)(DWORD_PTR)himc, bufSize, imeOpen, (int)compLen);
+    OutputDebugStringA(dbgBuf);
+
     if (bufSize > 0) {
-        CANDIDATELIST* candList = (CANDIDATELIST*)new char[bufSize];
+        std::vector<char> candBuf(bufSize);
+        CANDIDATELIST* candList = reinterpret_cast<CANDIDATELIST*>(candBuf.data());
         ImmGetCandidateList(himc, 0, candList, bufSize);
         DWORD count = candList->dwCount;
         selectedIndex = candList->dwSelection;
         if (count > 10) count = 10;
         for (DWORD j = 0; j < count; j++) {
-            wchar_t* pStr = (wchar_t*)((char*)candList + candList->dwOffset[j]);
+            wchar_t* pStr = (wchar_t*)(candBuf.data() + candList->dwOffset[j]);
             candidates.push_back(pStr);
         }
-        delete[] (char*)candList;
+        sprintf_s(dbgBuf, "[ChineseIME] PollIME: got %d candidates, sel=%d\n", (int)count, selectedIndex);
+        OutputDebugStringA(dbgBuf);
     }
 
     mgr.updateCandidates(composition, candidates, selectedIndex);
@@ -194,25 +228,21 @@ void PollIMEState() {
 extern "C" {
 
 __declspec(dllexport) void SetCallbacks(void* candidateUpdate, void* layoutChange, void* modeChange, void* keyboardState) {
-    using CandFunc = void(*)(const wchar_t*, const wchar_t**, int, int);
-    using LayoutFunc = void(*)(int);
-    using ModeFunc = void(*)(int);
-    using KbdFunc = void(*)(int, int);
-    chineseime::setCandidateCallback(reinterpret_cast<CandFunc>(candidateUpdate));
-    chineseime::setLayoutChangeCallback(reinterpret_cast<LayoutFunc>(layoutChange));
-    chineseime::setModeChangeCallback(reinterpret_cast<ModeFunc>(modeChange));
-    chineseime::setKeyboardStateCallback(reinterpret_cast<KbdFunc>(keyboardState));
 }
 
 __declspec(dllexport) int StartListen(void* hwnd) {
-    if (g_tsfInitialized.load()) return 1;
+    if (g_tsfInitialized.load() || g_imm32Initialized.load()) return 1;
+
+    g_targetWindow = hwnd ? reinterpret_cast<HWND>(hwnd) : nullptr;
 
     HKL hkl = GetKeyboardLayout(0);
     if (hkl) {
         chineseime::InputMethodType type = DetectInputMethodTypeFromHkl(hkl);
         chineseime::ImeStateManager::get().updateInputMethod(type);
         LANGID langId = LOWORD(reinterpret_cast<DWORD_PTR>(hkl));
-        chineseime::ImeStateManager::get().updateChineseMode(IsChineseLangId(langId));
+        bool isChineseLang = IsChineseLangId(langId);
+        chineseime::ImeStateManager::get().updateChineseMode(isChineseLang);
+        chineseime::ImeStateManager::get().updateImeOpen(isChineseLang);
     }
 
     return 1;
@@ -285,13 +315,7 @@ __declspec(dllexport) int StartTsfListen(void) {
     g_pollingThread = std::thread([]() {
         DEBUG_LOG_SIMPLE("[ChineseIME] Polling thread started\n");
         PollKeyboardState();
-        if (g_tsfMonitor) {
-            g_tsfMonitor->refreshState();
-        } else if (g_imm32Monitor) {
-            g_imm32Monitor->update();
-        } else {
-            PollIMEState();
-        }
+        PollIMEState();
         {
             auto initialState = chineseime::ImeStateManager::get().getSnapshot();
             bool isChineseIM = initialState.inputMethodType != chineseime::InputMethodType::ENGLISH &&
@@ -307,14 +331,7 @@ __declspec(dllexport) int StartTsfListen(void) {
         }
         while (g_pollingRunning.load()) {
             PollKeyboardState();
-
-            if (g_tsfMonitor) {
-                g_tsfMonitor->refreshState();
-            } else if (g_imm32Monitor) {
-                g_imm32Monitor->update();
-            } else {
-                PollIMEState();
-            }
+            PollIMEState();
 
             auto changes = chineseime::ImeStateManager::get().checkChanges();
             auto state = chineseime::ImeStateManager::get().getSnapshot();
@@ -363,12 +380,12 @@ __declspec(dllexport) int StartTsfListen(void) {
     return 1;
 }
 
-void StopTsfListen(void) {
-    if (g_pollingRunning.load()) {
-        g_pollingRunning.store(false);
-        if (g_pollingThread.joinable()) {
-            g_pollingThread.join();
-        }
+__declspec(dllexport) void StopTsfListen(void) {
+    g_pollingRunning.store(false);
+
+    if (g_pollingThread.joinable()) {
+        std::thread tmpThread = std::move(g_pollingThread);
+        tmpThread.detach();
     }
 
     if (g_staThread && g_tsfMonitor) {
@@ -403,7 +420,7 @@ void StopTsfListen(void) {
     g_imm32Initialized.store(false);
 }
 
-int IsTsfListening(void) {
+__declspec(dllexport) int IsTsfListening(void) {
     return g_tsfInitialized.load() ? 1 : 0;
 }
 
@@ -411,7 +428,7 @@ __declspec(dllexport) int IsChineseMode(void) {
     return chineseime::ImeStateManager::get().getSnapshot().chineseMode ? 1 : 0;
 }
 
-int GetCompositionString(wchar_t* buffer, int bufferSize) {
+__declspec(dllexport) int GetCompositionString(wchar_t* buffer, int bufferSize) {
     if (!buffer || bufferSize <= 0) return 0;
     auto state = chineseime::ImeStateManager::get().getSnapshot();
     if (state.composition.empty()) {
@@ -425,11 +442,11 @@ int GetCompositionString(wchar_t* buffer, int bufferSize) {
     return len;
 }
 
-int GetCandidateCount(void) {
+__declspec(dllexport) int GetCandidateCount(void) {
     return (int)chineseime::ImeStateManager::get().getSnapshot().candidates.size();
 }
 
-int GetCandidate(int index, wchar_t* buffer, int bufferSize) {
+__declspec(dllexport) int GetCandidate(int index, wchar_t* buffer, int bufferSize) {
     if (!buffer || bufferSize <= 0) return 0;
     auto state = chineseime::ImeStateManager::get().getSnapshot();
     if (index < 0 || index >= (int)state.candidates.size()) {
@@ -444,23 +461,23 @@ int GetCandidate(int index, wchar_t* buffer, int bufferSize) {
     return len;
 }
 
-int GetSelectedCandidateIndex(void) {
+__declspec(dllexport) int GetSelectedCandidateIndex(void) {
     return chineseime::ImeStateManager::get().getSnapshot().selectedIndex;
 }
 
-int GetImeOpenStatus(void) {
+__declspec(dllexport) int GetImeOpenStatus(void) {
     return chineseime::ImeStateManager::get().getSnapshot().imeOpen ? 1 : 0;
 }
 
-int GetTsfChineseMode(void) {
+__declspec(dllexport) int GetTsfChineseMode(void) {
     return chineseime::ImeStateManager::get().getSnapshot().chineseMode ? 1 : 0;
 }
 
-int HasTsfLayoutChanged(void) {
+__declspec(dllexport) int HasTsfLayoutChanged(void) {
     return chineseime::ImeStateManager::get().checkLayoutChanged() ? 1 : 0;
 }
 
-int GetInputMethodType(void) {
+__declspec(dllexport) int GetInputMethodType(void) {
     return (int)chineseime::ImeStateManager::get().getSnapshot().inputMethodType;
 }
 
@@ -477,32 +494,27 @@ __declspec(dllexport) int GetCapsLockState(void) {
 }
 
 __declspec(dllexport) int GetKeyboardStateForPolling(int vKey) {
-    return (GetAsyncKeyState(vKey) & 0x8000) ? 1 : 0;
+    return (GetKeyState(vKey) & 0x8000) ? 1 : 0;
 }
 
 __declspec(dllexport) void SetTargetWindow(void* hwnd) {
     g_targetWindow = hwnd ? reinterpret_cast<HWND>(hwnd) : nullptr;
 }
 
-void RefreshImeState(void) {
-    if (g_tsfMonitor) {
-        g_tsfMonitor->refreshState();
-    } else if (g_imm32Monitor) {
-        g_imm32Monitor->update();
-    } else {
-        PollIMEState();
-    }
+__declspec(dllexport) void RefreshImeState(void) {
+    PollKeyboardState();
+    PollIMEState();
 }
 
-void FreeBuffer(void* ptr) {
+__declspec(dllexport) void FreeBuffer(void* ptr) {
     if (ptr) CoTaskMemFree(ptr);
 }
 
-const char* GetDllVersion(void) {
+__declspec(dllexport) const char* GetDllVersion(void) {
     return VERSION;
 }
 
-int HasLayoutChanged(void) {
+__declspec(dllexport) int HasLayoutChanged(void) {
     return chineseime::ImeStateManager::get().checkLayoutChanged() ? 1 : 0;
 }
 

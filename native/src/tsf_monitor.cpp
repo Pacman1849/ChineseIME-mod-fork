@@ -14,7 +14,7 @@ const GUID GUID_COMPARTMENT_KEYBOARD_INPUTMODE =
 { 0x5147C989, 0x49A1, 0x46EC, { 0x8F, 0x15, 0x75, 0x9C, 0x45, 0x7D, 0x12, 0x4D } };
 
 const GUID GUID_MS_PINYIN =
-{ 0x81d4e9c9, 0x1d3b, 0x41bc, { 0x9e, 0x6c, 0x4b, 0x40, 0xbf, 0x79, 0xe3, 0x5e } };
+{ 0xFA445057, 0x17C6, 0x4973, { 0x93, 0x44, 0xE0, 0xDF, 0xF5, 0xF2, 0x3F, 0x10 } };
 
 const GUID GUID_MS_ZHUYIN =
 { 0xb115690a, 0xea02, 0x48d5, { 0xa2, 0x31, 0xe3, 0x57, 0x8d, 0x2f, 0x0c, 0x52 } };
@@ -44,6 +44,36 @@ const GUID GUID_PROP_CANDIDATE =
 #endif
 
 namespace chineseime {
+
+static bool IsChineseLangId(LANGID langId) {
+    return langId == 0x0804 || langId == 0x0404 || langId == 0x0C04 || langId == 0x1404;
+}
+
+static InputMethodType detectInputMethodTypeFromHklSafe(HKL hkl) {
+    if (!hkl) return InputMethodType::UNKNOWN;
+    LANGID langId = LOWORD(reinterpret_cast<DWORD_PTR>(hkl));
+    if (!IsChineseLangId(langId)) return InputMethodType::ENGLISH;
+    DWORD_PTR hklValue = reinterpret_cast<DWORD_PTR>(hkl);
+    WORD imeId = HIWORD(hklValue);
+    InputMethodType type = detectInputMethodTypeFromImeId(imeId, langId);
+    if (type == InputMethodType::OTHER_CHINESE && IsChineseLangId(langId)) {
+        WCHAR klName[16] = {0};
+        if (GetKeyboardLayoutNameW(klName) && klName[0]) {
+            WCHAR layoutLow = klName[7];
+            WCHAR layoutHigh = klName[6];
+            if (layoutLow >= L'0' && layoutLow <= L'9') {
+                WORD extractedId = static_cast<WORD>((layoutHigh - L'0') * 16 + (layoutLow - L'0'));
+                type = detectInputMethodTypeFromImeId(extractedId, langId);
+            } else if (layoutLow >= L'A' && layoutLow <= L'F') {
+                WORD lowNibble = static_cast<WORD>(layoutLow - L'A' + 10);
+                WORD highNibble = static_cast<WORD>(layoutHigh - L'A' + 10);
+                WORD extractedId = static_cast<WORD>(lowNibble + (highNibble << 4));
+                type = detectInputMethodTypeFromImeId(extractedId, langId);
+            }
+        }
+    }
+    return type;
+}
 
 TsfMonitor::TsfMonitor() {
     DEBUG_LOG_SIMPLE(L"[ChineseIME] TsfMonitor created\n");
@@ -132,6 +162,8 @@ STDMETHODIMP TsfMonitor::QueryInterface(REFIID riid, void** ppv) {
         *ppv = static_cast<ITfInputProcessorProfileActivationSink*>(this);
     } else if (riid == IID_ITfCompartmentEventSink) {
         *ppv = static_cast<ITfCompartmentEventSink*>(this);
+    } else if (riid == IID_ITfUIElementSink) {
+        *ppv = static_cast<ITfUIElementSink*>(this);
     } else {
         *ppv = nullptr;
         return E_NOINTERFACE;
@@ -195,6 +227,22 @@ STDMETHODIMP TsfMonitor::OnSetFocus(BOOL fForeground) {
     return S_OK;
 }
 
+STDMETHODIMP TsfMonitor::BeginUIElement(DWORD dwUIElementId, BOOL* pbShow) {
+    if (pbShow) *pbShow = TRUE;
+    char buf[128];
+    sprintf_s(buf, "[ChineseIME] BeginUIElement: id=%d\n", dwUIElementId);
+    OutputDebugStringA(buf);
+    return S_OK;
+}
+
+STDMETHODIMP TsfMonitor::UpdateUIElement(DWORD dwUIElementId) {
+    return S_OK;
+}
+
+STDMETHODIMP TsfMonitor::EndUIElement(DWORD dwUIElementId) {
+    return S_OK;
+}
+
 STDMETHODIMP TsfMonitor::OnActivated(DWORD dwProfileType, LANGID langid, REFCLSID clsid,
                                      REFGUID guidProfile, REFGUID guidCat, HKL hkl, DWORD dwFlags) {
     updateInputMethodType(langid, clsid, guidProfile);
@@ -203,15 +251,32 @@ STDMETHODIMP TsfMonitor::OnActivated(DWORD dwProfileType, LANGID langid, REFCLSI
         (int)currentInputMethod_, langid, (DWORD)(DWORD_PTR)hkl, dwFlags);
 
     if (dwFlags & TF_IPSINK_FLAG_ACTIVE) {
-        ImeStateManager::get().updateInputMethod(currentInputMethod_);
+        if (currentInputMethod_ != InputMethodType::UNKNOWN) {
+            ImeStateManager::get().updateInputMethod(currentInputMethod_);
+        } else {
+            InputMethodType hklType = detectInputMethodTypeFromHklSafe(hkl);
+            if (hklType != InputMethodType::UNKNOWN && hklType != InputMethodType::ENGLISH) {
+                currentInputMethod_ = hklType;
+                ImeStateManager::get().updateInputMethod(hklType);
+            }
+        }
 
+        HWND fgWnd = GetForegroundWindow();
+        bool imeOpen = false;
         bool isChineseLang = (langid == 0x0804 || langid == 0x0404 ||
                              langid == 0x0C04 || langid == 0x1404);
-        chineseMode_ = isChineseLang;
-        ImeStateManager::get().updateChineseMode(isChineseLang);
-        ImeStateManager::get().updateImeOpen(true);
+        if (fgWnd) {
+            HIMC himc = ImmGetContext(fgWnd);
+            if (himc) {
+                imeOpen = ImmGetOpenStatus(himc) != 0;
+                ImmReleaseContext(fgWnd, himc);
+            }
+        }
+        chineseMode_ = imeOpen && isChineseLang;
+        ImeStateManager::get().updateChineseMode(chineseMode_);
+        ImeStateManager::get().updateImeOpen(imeOpen);
 
-        onImeStateChanged(static_cast<int>(currentInputMethod_), isChineseLang);
+        onImeStateChanged(static_cast<int>(currentInputMethod_), chineseMode_);
     }
 
     return S_OK;
@@ -223,6 +288,11 @@ STDMETHODIMP TsfMonitor::OnChange(REFGUID rguid) {
         if (chineseMode_ != newChineseMode) {
             chineseMode_ = newChineseMode;
             ImeStateManager::get().updateChineseMode(newChineseMode);
+
+            if (newChineseMode) {
+                updateCache();
+            }
+
             onImeStateChanged(static_cast<int>(currentInputMethod_), newChineseMode);
         }
     }
@@ -230,6 +300,17 @@ STDMETHODIMP TsfMonitor::OnChange(REFGUID rguid) {
 }
 
 bool TsfMonitor::detectChineseMode() {
+    HWND fgWnd = GetForegroundWindow();
+    if (fgWnd) {
+        HIMC himc = ImmGetContext(fgWnd);
+        if (himc) {
+            bool imeOpen = ImmGetOpenStatus(himc) != 0;
+            ImmReleaseContext(fgWnd, himc);
+            chineseMode_ = imeOpen;
+            return chineseMode_;
+        }
+    }
+
     if (threadMgr_) {
         ITfDocumentMgr* docMgr = nullptr;
         HRESULT hr = threadMgr_->GetFocus(&docMgr);
@@ -262,21 +343,6 @@ bool TsfMonitor::detectChineseMode() {
         }
     }
 
-    HWND fgWnd = GetForegroundWindow();
-    if (fgWnd) {
-        HIMC himc = ImmGetContext(fgWnd);
-        if (himc) {
-            DWORD conversion = 0;
-            DWORD sentence = 0;
-            if (ImmGetConversionStatus(himc, &conversion, &sentence)) {
-                ImmReleaseContext(fgWnd, himc);
-                chineseMode_ = (conversion & IME_CMODE_NATIVE) != 0;
-                return chineseMode_;
-            }
-            ImmReleaseContext(fgWnd, himc);
-        }
-    }
-
     return chineseMode_;
 }
 
@@ -289,96 +355,76 @@ void TsfMonitor::updateCache() {
 
     mgr.updateChineseMode(chineseMode_);
 
+    std::wstring composition;
+    std::vector<std::wstring> candidates;
+    int selectedIndex = 0;
+    bool candidatesFound = false;
+
     ITfContext* ctx = getCurrentContext();
-    bool gotCandidatesFromTsf = false;
     if (ctx) {
-        std::wstring composition;
         getCompositionString(ctx, composition);
-        std::vector<std::wstring> candidates;
-        int selectedIndex = 0;
         if (getCandidateList(ctx, candidates, selectedIndex)) {
-            mgr.updateCandidates(composition, candidates, selectedIndex);
-            gotCandidatesFromTsf = true;
+            candidatesFound = true;
         }
         ctx->Release();
     }
 
-    if (!gotCandidatesFromTsf) {
+    if (!candidatesFound) {
         HWND fgWnd = GetForegroundWindow();
         if (fgWnd) {
             HIMC himc = ImmGetContext(fgWnd);
             if (himc) {
-                std::wstring composition;
                 LONG compLen = ImmGetCompositionString(himc, GCS_COMPSTR, nullptr, 0);
                 if (compLen <= 0) {
                     compLen = ImmGetCompositionString(himc, GCS_COMPREADSTR, nullptr, 0);
                 }
                 if (compLen > 0) {
                     int wcharLen = compLen / sizeof(wchar_t);
-                    wchar_t* compBuf = new wchar_t[wcharLen + 1];
-                    LONG actualLen = ImmGetCompositionString(himc, GCS_COMPSTR, compBuf, compLen);
+                    std::vector<wchar_t> compBuf(wcharLen + 1);
+                    LONG actualLen = ImmGetCompositionString(himc, GCS_COMPSTR, compBuf.data(), compLen);
                     if (actualLen <= 0) {
-                        actualLen = ImmGetCompositionString(himc, GCS_COMPREADSTR, compBuf, compLen);
+                        actualLen = ImmGetCompositionString(himc, GCS_COMPREADSTR, compBuf.data(), compLen);
                     }
                     if (actualLen > 0) {
                         int actualWcharLen = actualLen / sizeof(wchar_t);
                         compBuf[actualWcharLen] = 0;
-                        composition = compBuf;
+                        composition.assign(compBuf.data(), actualWcharLen);
                     }
-                    delete[] compBuf;
                 }
 
-                std::vector<std::wstring> candidates;
-                int selectedIndex = 0;
                 size_t bufSize = ImmGetCandidateList(himc, 0, nullptr, 0);
                 if (bufSize > 0) {
-                    CANDIDATELIST* candList = (CANDIDATELIST*)new char[bufSize];
+                    std::vector<char> candBuf(bufSize);
+                    CANDIDATELIST* candList = reinterpret_cast<CANDIDATELIST*>(candBuf.data());
                     ImmGetCandidateList(himc, 0, candList, bufSize);
                     DWORD count = candList->dwCount;
                     selectedIndex = candList->dwSelection;
                     if (count > 10) count = 10;
                     for (DWORD j = 0; j < count; j++) {
-                        wchar_t* pStr = (wchar_t*)((char*)candList + candList->dwOffset[j]);
+                        wchar_t* pStr = (wchar_t*)(candBuf.data() + candList->dwOffset[j]);
                         candidates.push_back(pStr);
                     }
-                    delete[] (char*)candList;
+                    candidatesFound = true;
                 }
 
                 char debugBuf[512];
-                sprintf_s(debugBuf, "[ChineseIME] TSF-IMM fallback: comp='%S', candCount=%d, imeOpen=%d\n",
-                    composition.c_str(), (int)candidates.size(),
-                    ImmGetOpenStatus(himc) != 0 ? 1 : 0);
+                sprintf_s(debugBuf, "[ChineseIME] updateCache: IMM32 comp='%S', candCount=%d, found=%d\n",
+                    composition.c_str(), (int)candidates.size(), candidatesFound ? 1 : 0);
                 OutputDebugStringA(debugBuf);
 
-                if (!candidates.empty()) {
-                    mgr.updateCandidates(composition, candidates, selectedIndex);
-                } else {
-                    mgr.updateCandidates(composition, {}, 0);
-                }
                 ImmReleaseContext(fgWnd, himc);
             }
         }
     }
 
+    mgr.updateCandidates(composition, candidates, selectedIndex);
+
     HKL hkl = GetKeyboardLayout(0);
     if (hkl) {
         LANGID langId = LOWORD(reinterpret_cast<DWORD_PTR>(hkl));
 
-        if (currentInputMethod_ != InputMethodType::UNKNOWN &&
-            currentInputMethod_ != InputMethodType::ENGLISH) {
-            mgr.updateInputMethod(currentInputMethod_);
-
-            HWND fgWnd = GetForegroundWindow();
-            bool imeOpen = true;
-            if (fgWnd) {
-                HIMC himc = ImmGetContext(fgWnd);
-                if (himc) {
-                    imeOpen = ImmGetOpenStatus(himc) != 0;
-                    ImmReleaseContext(fgWnd, himc);
-                }
-            }
-            mgr.updateImeOpen(imeOpen);
-        } else {
+        if (currentInputMethod_ == InputMethodType::UNKNOWN ||
+            currentInputMethod_ == InputMethodType::ENGLISH) {
             DWORD_PTR hklValue = reinterpret_cast<DWORD_PTR>(hkl);
             WORD imeId = HIWORD(hklValue);
             InputMethodType imType = detectInputMethodTypeFromImeId(imeId, langId);
@@ -390,7 +436,7 @@ void TsfMonitor::updateCache() {
                 mgr.updateInputMethod(InputMethodType::ENGLISH);
                 mgr.updateImeOpen(false);
                 mgr.updateChineseMode(false);
-            } else {
+            } else if (imType != InputMethodType::OTHER_CHINESE) {
                 mgr.updateInputMethod(imType);
                 HWND fgWnd = GetForegroundWindow();
                 bool imeOpen = true;
