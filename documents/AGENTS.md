@@ -16,27 +16,33 @@ cmake --build build --config Release
 
 ### 部署到 Minecraft 实例
 ```bash
+# Windows PowerShell
 copy build\libs\chineseime-1.0.0.jar "C:\Users\user\AppData\Roaming\PrismLauncher\instances\1.21.4 fabric\minecraft\mods\"
 copy natives\Release\chineseime_native.dll "C:\Users\user\AppData\Roaming\PrismLauncher\instances\1.21.4 fabric\minecraft\mods\"
 ```
 
 ## 架构要点
 
+### 双通道 IME 状态同步
+**Windows IME 使用两条通道获取数据：**
+1. **WndProc Hook (IMM32)** - `win_event_bridge.cpp` 通过 `SetWindowLongPtr` 替换窗口过程，监听 `WM_IME_*` 消息
+2. **TSF Polling** - `tsf_monitor.cpp` 通过轮询 `ITfContext` 的 `GUID_PROP_CANDIDATE` 属性获取候选词
+
+**为什么需要两条通道：**
+- IMM32 API (`ImmGetCandidateList`) 对 TSF 架构输入法返回 0
+- TSF API 通过 `ITfContext` 属性读取可获取候选词
+- `WindowsIMEEventBridge.initialize()` 同时启动两者
+
 ### 核心架构：Java 信任 C++ DLL
 **C++ DLL 统一检测所有 IME 状态，Java 只做监听和 UI 更新：**
 - 输入法类型：通过 HKL 的 IME ID 检测（`detectInputMethodTypeFromImeId`）
 - 中文模式：通过 IMM32 `ImmGetOpenStatus` 检测（IME 打开=中文模式，关闭=英文模式）
 - Caps Lock：通过 `GetKeyboardState` 系统级检测（不是 `GetAsyncKeyState`）
-- 候选词：通过 IMM32 获取
+- 候选词：通过 IMM32 或 TSF API 获取
 
 **重要：必须使用 `GetKeyboardState` 而非 `GetAsyncKeyState`**
 - `GetAsyncKeyState` 是**线程相关**的，从轮询线程调用时返回错误状态
 - `GetKeyboardState` 返回**系统级**键盘状态，对前台窗口有效
-
-**C++ 只在状态变化时回调 Java：**
-- 使用 `checkChanges()` 检测实际变化
-- 候选词/组合字符串变化时才回调
-- 减少不必要的回调
 
 **Java `update()` 方法完全信任 C++ 缓存：**
 - 直接读取 C++ 缓存中的状态
@@ -53,11 +59,6 @@ copy natives\Release\chineseime_native.dll "C:\Users\user\AppData\Roaming\PrismL
 - **Caps Lock 指示器**（蓝色背景）：使用 `GetKeyboardState(VK_CAPITAL) & 0x01` 检测
 - **输入法类型**：无论中英文模式，始终显示输入法简称（拼/注/仓/速/五）
 
-### IME 类型检测优先级
-1. `OnActivated` 回调中直接使用 HKL 检测（最可靠）
-2. `PollIMEState` 中使用 `detectInputMethodTypeFromImeId` 验证
-3. TSF GUID 检测作为辅助参考（因为经常失败）
-
 ## JNA 关键注意事项
 
 ### 典型错误
@@ -68,6 +69,19 @@ copy natives\Release\chineseime_native.dll "C:\Users\user\AppData\Roaming\PrismL
 - Java: 接口继承 `StdCallLibrary`
 - 回调接口继承 `StdCallLibrary.StdCallCallback`
 - C++ `wchar_t*` → Java `WString`
+
+### DLL 加载
+**`NativeImeBridge.isAvailable()` 会自动调用 `getInstance()` 加载 DLL：**
+```java
+public static boolean isAvailable() {
+    if (!loadAttempted) {
+        getInstance();  // 懒加载 DLL
+    }
+    return loaded && INSTANCE != null;
+}
+```
+
+**DLL 从 JAR 的 `META-INF/natives/amd64/chineseime_native.dll` 提取到 temp 目录**
 
 ### Caps Lock 检测要点
 - **必须使用 `GetKeyboardState`** 而不是 `GetAsyncKeyState`
@@ -88,50 +102,44 @@ copy natives\Release\chineseime_native.dll "C:\Users\user\AppData\Roaming\PrismL
 
 ## 候选词显示关键修复
 
-### 1. PollIMEState() 必须无条件获取候选词
-**ime_bridge.cpp 中的错误逻辑：**
+### 1. IMM32 对 TSF IME 返回 0
+**问题**：`ImmGetCandidateList` 对微软拼音等 TSF 架构输入法返回 0
+
+**解决方案**：TSF 轮询通过 `ITfContext::GetProperty(GUID_PROP_CANDIDATE)` 获取候选词
 ```cpp
-// 错误：条件限制了非传统 IME 的候选词获取
-if (isLegacy || newState.composition.empty()) {
-    GetCandidatesFromIMM(himc, newState.candidates, newState.selectedIndex);
+// tsf_monitor.cpp getCandidateListFromProperty()
+ITfProperty* prop = nullptr;
+pic->GetProperty(GUID_PROP_CANDIDATE, &prop);
+```
+
+### 2. WndProc Hook 必须传递消息
+**问题**：替换 WndProc 后必须调用原始窗口过程，否则 Windows 的候选窗口无法显示
+
+**正确做法**：
+```cpp
+LRESULT CALLBACK ImeWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    // 处理 IME 消息...
+    if (g_originalWndProc) {
+        return CallWindowProc(g_originalWndProc, hWnd, msg, wParam, lParam);
+    }
+    return DefWindowProc(hWnd, msg, wParam, lParam);
 }
 ```
 
-**正确逻辑：始终获取候选词：**
-```cpp
-// 正确：无条件获取所有 IME 的候选词
-GetCompositionFromIMM(himc, newState.composition);
-GetCandidatesFromIMM(himc, newState.candidates, newState.selectedIndex);
-```
-
-### 2. CandidateHud.visible 计算方式
+### 3. CandidateHud.visible 计算方式
 **错误：`visible = !candidates.isEmpty() || !input.isEmpty()`**
 - 当 candidates 为空但 input 有值时，visible=true 但不渲染任何内容
 
 **正确：`visible = !candidates.isEmpty()`**
 - 只在有候选词时才显示 HUD
 
-### 3. GetCandidatesFromIMM 必须读取 selectedIndex
+### 4. getCandidatesFromIMM 必须读取 selectedIndex
 ```cpp
 // 错误：selectedIndex 总是 0
 selectedIndex = 0;
 
 // 正确：从 CANDIDATELIST 读取
 selectedIndex = candList->dwSelection;
-```
-
-### 4. syncFromWindows 需要内置引擎回退
-当 Windows IME 候选词为空但 composition 不为空时，需要调用内置引擎生成候选词：
-```java
-if (!winComposition.isEmpty()) {
-    if (!winCandidates.isEmpty()) {
-        hud.updateCandidates(winCandidates, winComposition);
-    } else {
-        // 使用内置引擎生成候选词回退
-        List<String> cands = getSuggestions(winComposition);
-        hud.updateCandidates(cands, winComposition);
-    }
-}
 ```
 
 ## IME ID 对照表 (HKL 高位字)
@@ -155,16 +163,6 @@ if (!winComposition.isEmpty()) {
 | 微软仓颉 | 0x0004, 0xE002 |
 | 微软速成 | 0x0005, 0xE003 |
 
-### IsLegacyIME 函数
-只应返回传统 IME（仓颉 0x0004 和速成 0x0005）：
-```cpp
-bool IsLegacyIME(HKL hkl) {
-    DWORD_PTR hklValue = reinterpret_cast<DWORD_PTR>(hkl);
-    WORD imeId = HIWORD(hklValue);
-    return imeId == 0x0004 || imeId == 0x0005;
-}
-```
-
 ## 版本兼容性
 - Minecraft: 1.21.4
 - Fabric Loader: 0.16.9+
@@ -174,95 +172,135 @@ bool IsLegacyIME(HKL hkl) {
 
 ## 目录结构
 ```
-native/src/ # C++ DLL 源码
-ime_bridge.cpp # 主入口、轮询线程、回调通知
-tsf_sink.cpp # TSF 监听实现、中文模式检测
-tsf_sink.h # TSF Sink 类定义
-common.h # 数据结构、回调定义
-candidate_cache.cpp # 状态缓存、变化检测
-sta_thread.cpp # STA 线程管理
+native/src/                    # C++ DLL 源码
+├── ime_bridge.cpp             # 主入口、轮询线程、导出函数
+├── win_event_bridge.cpp       # WndProc Hook (IMM32 通道)
+├── tsf_monitor.cpp            # TSF 监控、候选词读取
+├── imm32_monitor.cpp          # IMM32 备用监控
+├── ime_state_manager.cpp      # 状态管理、变化检测
+├── jni_callback.cpp           # JNA 回调
+└── sta_thread.cpp             # STA 线程管理
 
 src/main/java/com/example/chineseime/
-platform/win32/
-NativeImeBridge.java # JNA 接口定义
-WindowsIMEBridgeNative.java # IME 桥接
-hud/
-ImeStatusIndicator.java # 指示器和候选词 UI
-engine/
-InputMode.java # 输入模式枚举
+├── ChineseIMEInitializer.java # 主初始化器
+├── platform/win32/
+│   ├── NativeImeBridge.java   # JNA 接口定义
+│   ├── WindowsIMEEventBridge.java  # 事件回调处理
+│   └── WindowsIMEBridgeNative.java # IME 桥接
+├── hud/
+│   ├── CandidateHud.java      # 候选词 HUD
+│   ├── ImeStatusIndicator.java # 输入法状态指示器
+│   └── VerticalCandidateHud.java # 垂直候选词（仓颉/注音/速成）
+└── engine/
+    └── PinyinDictionary.java  # 内置拼音引擎
 
-build/libs/chineseime-1.0.0.jar # 输出的 mod JAR
+build/libs/chineseime-1.0.0.jar      # 输出的 mod JAR
 natives/Release/chineseime_native.dll # 输出的 native DLL
 ```
 
 ## 核心文件说明
 
-### ime_bridge.cpp - PollIMEState()
-轮询线程的主要函数，检测顺序：
-1. 获取 HKL，计算 IME 类型
-2. 使用 `GetKeyboardState` 检测 Caps Lock 和 Shift 状态
-3. 使用 `ImmGetOpenStatus` 检测 IME 打开/关闭状态（中文模式）
-4. 计算 `inShiftMode = isChineseInputMethod && !chineseMode`
-5. **无条件**调用 `GetCompositionFromIMM` 和 `GetCandidatesFromIMM`
-6. 更新 `g_cache`
+### win_event_bridge.cpp - ImeWndProc()
+WndProc Hook 的消息处理：
+1. `WM_IME_STARTCOMPOSITION` - 调用 `processImeEndComposition` 清空
+2. `WM_IME_COMPOSITION` - 调用 `processImeComposition` 读取组合字符串和候选词
+3. `WM_IME_ENDCOMPOSITION` - 调用 `processImeEndComposition` 清空
+4. `WM_IME_NOTIFY` - 处理 `IMN_OPENCANDIDATE/CHANGECANDIDATE/CLOSECANDIDATE`
+5. 所有消息最后调用 `CallWindowProc(g_originalWndProc, ...)` 传递
 
-### tsf_sink.cpp - OnActivated()
-输入法切换时的回调：
-1. 直接使用 HKL 检测 IME 类型（不依赖 TSF GUID）
-2. 根据语言 ID 设置 `chineseMode = true`（中文语言）
-3. 更新 `g_cache`
+### ime_bridge.cpp - StartTsfListen()
+TSF 轮询的启动：
+1. 创建 STA 线程
+2. 在 STA 线程中创建 `ITfThreadMgr`
+3. 调用 `g_tsfMonitor->initialize(pThreadMgr)`
+4. 启动轮询线程，每 16ms 调用 `updateCache()`
 
-### tsf_sink.cpp - detectChineseMode()
-中文模式检测：
-1. 尝试 TSF compartment 检测（可能失败）
-2. 回退到 IMM32 `ImmGetConversionStatus`
-3. 所有检测失败时返回当前状态
+### tsf_monitor.cpp - updateCache()
+TSF 轮询的主要函数：
+1. 获取 `ITfContext`
+2. 调用 `getCompositionString()` 读取组合字符串
+3. 调用 `getCandidateList()` 读取候选词（通过 `GUID_PROP_CANDIDATE`）
+4. 如果 TSF 失败，回退到 IMM32 `ImmGetCandidateList`
 
-### tsf_sink.cpp - forceUpdateChineseMode()
-强制更新中文模式：
-1. 使用 IMM32 `ImmGetConversionStatus` 检测
-2. IME_CMODE_NATIVE 标志表示中文模式
-3. 失败时默认设置为 true（避免误报）
+### WindowsIMEEventBridge.java - initialize()
+初始化事件驱动 IME：
+```java
+public void initialize(long hwnd) {
+    NativeImeBridge.setEventCallbacks(preeditCallback, commitCallback,
+        candidateCallback, imeChangeCallback, keyboardCallback);
+    NativeImeBridge.hookWindowProc(hwnd);      // 启动 IMM32 WndProc Hook
+    NativeImeBridge.startTsfListening();       // 启动 TSF 轮询
+}
+```
 
 ## 调试日志
 
-### C++ 调试输出
-`PollIMEState` 中的状态变化日志：
+### C++ 调试输出 (DebugView)
+`WinEventBridge` 日志：
 ```
-[ChineseIME] State: CapsLock=X, ShiftMode=X, ChineseMode=X, IMEType=X
+[ChineseIME] ImeWndProc: msg=0x0102, hwnd=0x00001A2B  # 键盘消息
+[ChineseIME] WM_IME_COMPOSITION hwnd=0x..., lParam=0x00000085
+[ChineseIME] readCandidates: bufSize=0  # IMM32 无数据
 ```
-- CapsLock: 1=大写锁定开启
-- ShiftMode: 1=中文输入法+英文模式（显示黄色指示器）
-- ChineseMode: 1=中文模式
-- IMEType: 2=拼音, 3=注音, 4=仓颉, 5=五笔, 6=速成
 
-### Java 调试
+`TsfMonitor` 日志：
+```
+[ChineseIME] updateCache: IMM32 comp='ni', candCount=0, found=0  # 无候选词
+[ChineseIME] BeginUIElement: id=123  # TSF UI 元素
+```
+
+### Java 调试 (Minecraft 日志)
+```
+[ChineseIME] Loading native library...           # DLL 加载中
+[ChineseIME] DLL loaded successfully             # DLL 加载成功
+[ChineseIME] WindowsIMEEventBridge.initialize() called with hwnd=0x1A2B
+[ChineseIME] TSF listening started: 1            # TSF 启动成功
+[ChineseIME] Preedit: 'ni', cursor=2              # 收到预编辑文本
+[ChineseIME] Candidates: count=9, sel=0           # 收到候选词
+```
+
+### Java 调试标志
 ```java
 System.setProperty("jna.debug_load", "true");
 System.setProperty("jna.debug_load.jna", "true");
 ```
 
 ### 调试建议
-1. 使用 Windows DebugView 工具查看 C++ 端的 OutputDebugStringW 输出
-2. 检查日志中是否有 `[ChineseIME] Native DLL loaded successfully`
-3. 在 `syncFromWindows()` 添加日志验证数据流
+1. 使用 Windows DebugView 工具查看 C++ 端的 OutputDebugStringA 输出
+2. 检查 Minecraft 日志中是否有 `[ChineseIME] DLL loaded successfully`
+3. 在 `WindowsIMEEventBridge` 的回调中添加日志验证数据流
+4. 如果 DebugView 没有 `[ChineseIME] ImeWndProc:` 消息，说明 Hook 失败
 
 ## 常见问题
 
 ### 候选词界面不显示
-1. 检查 `PollIMEState()` 是否**无条件**获取候选词
-2. 检查 `CandidateHud.updateCandidates()` 的 `visible` 计算是否正确
-3. 检查 `GetCandidatesFromIMM()` 是否正确读取 `dwSelection`
-4. 检查 `syncFromWindows()` 是否有内置引擎回退逻辑
+1. 检查 `ImmGetCandidateList` 是否返回 0（TSF IME 正常返回 0）
+2. 检查 TSF 轮询是否启动（日志中应有 `TSF listening started`）
+3. 检查 `updateCache()` 是否通过 TSF API 获取到候选词
+4. 检查 `CandidateHud.updateCandidates()` 的 `visible` 计算是否正确
+
+### WndProc Hook 失败
+**现象**：DebugView 没有 `[ChineseIME] ImeWndProc:` 消息
+
+**可能原因**：
+1. `SetWindowLongPtr` 被 GLFW 阻止
+2. HWND 格式不正确（需要 `glfwGetWin32Window`）
+3. 窗口已被另一个 Hook 替换
+
+**排查步骤**：
+1. 确认日志显示 `WindowsIMEEventBridge.initialize() called`
+2. 确认日志显示 `hookWindowProc returned`
+3. 确认日志显示 `hooked=X`
 
 ### DLL 导出问题
-1. 检查 CMakeLists.txt 包含 `ime_bridge.cpp`
+1. 检查 CMakeLists.txt 包含所有源文件
 2. 确保所有导出函数使用 `__declspec(dllexport)`
-3. 验证 DLL 大小（正常约 52KB）
+3. 验证 DLL 大小（正常约 200-500KB）
 
 ### TSF 初始化失败
 - TSF 操作必须在 STA 线程中执行
 - 使用 `StaThread` 类管理 STA 线程
+- `CoCreateInstance` 需要 COM 初始化
 
 ### 输入法类型不显示（仍显示"拼"）
 - 检查 `detectInputMethodTypeFromImeId` 是否处理所有 IME ID
@@ -282,3 +320,18 @@ System.setProperty("jna.debug_load.jna", "true");
 ### 黄色方块按下 Shift 后不显示
 - 检查 `ImmGetOpenStatus` 在 Shift 切换后是否正确返回 0
 - Shift 切换会导致 IME 关闭（英文模式）
+
+## TSF vs IMM32 架构
+
+| 输入法 | 架构 | 候选词获取 | WndProc Hook |
+|--------|------|------------|--------------|
+| 微软拼音 | TSF | TSF API (GUID_PROP_CANDIDATE) | IMM32 返回 0 |
+| 微软五笔 | TSF | TSF API (GUID_PROP_CANDIDATE) | IMM32 返回 0 |
+| 微软注音 | TSF | TSF API (GUID_PROP_CANDIDATE) | IMM32 返回 0 |
+| 微软仓颉 | IMM32 | ImmGetCandidateList 正常 | Hook 正常 |
+| 微软速成 | IMM32 | ImmGetCandidateList 正常 | Hook 正常 |
+
+**关键洞察**：
+- WndProc Hook 收到 `WM_IME_COMPOSITION` 但 `ImmGetCandidateList` 返回 0 是正常的
+- TSF 轮询是获取候选词的必要通道
+- 两条通道需要同时启用

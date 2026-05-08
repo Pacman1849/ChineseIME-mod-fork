@@ -173,6 +173,10 @@ public class WindowsIMEEventBridge {
             ChineseIMEInitializer.LOGGER.info("[ChineseIME] Calling hookWindowProc with hwnd={}", String.format("0x%X", hwnd));
             NativeImeBridge.hookWindowProc(hwnd);
             ChineseIMEInitializer.LOGGER.info("[ChineseIME] hookWindowProc returned");
+
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] Starting TSF listening...");
+            int tsfResult = NativeImeBridge.startTsfListening();
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] TSF listening started: {}", tsfResult);
         } catch (Throwable e) {
             ChineseIMEInitializer.LOGGER.error("[ChineseIME] hookWindowProc threw exception", e);
             return;

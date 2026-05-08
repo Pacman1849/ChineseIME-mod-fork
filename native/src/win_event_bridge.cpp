@@ -112,8 +112,17 @@ void WinEventBridge::readCompositionCursor(HIMC himc) {
 void WinEventBridge::readCandidates(HIMC himc) {
     if (!callbacks_.candidateCallback) return;
 
+    char dbg[256];
+    sprintf_s(dbg, "[ChineseIME] readCandidates: himc=0x%llX\n", (unsigned long long)himc);
+    OutputDebugStringA(dbg);
+
     DWORD bufSize = ImmGetCandidateListW(himc, 0, nullptr, 0);
+    sprintf_s(dbg, "[ChineseIME] readCandidates: bufSize=%u\n", (unsigned int)bufSize);
+    OutputDebugStringA(dbg);
+
     if (bufSize == 0) {
+        sprintf_s(dbg, "[ChineseIME] readCandidates: no candidates (bufSize=0)\n");
+        OutputDebugStringA(dbg);
         if (!lastCandidates_.empty()) {
             lastCandidates_.clear();
             callbacks_.candidateCallback(nullptr, 0, 0);
@@ -123,17 +132,29 @@ void WinEventBridge::readCandidates(HIMC himc) {
 
     std::vector<char> buf(bufSize);
     CANDIDATELIST* candList = reinterpret_cast<CANDIDATELIST*>(buf.data());
-    if (!ImmGetCandidateListW(himc, 0, candList, bufSize)) return;
+    if (!ImmGetCandidateListW(himc, 0, candList, bufSize)) {
+        sprintf_s(dbg, "[ChineseIME] readCandidates: ImmGetCandidateListW failed\n");
+        OutputDebugStringA(dbg);
+        return;
+    }
 
     lastCandidates_.clear();
     DWORD count = candList->dwCount;
+    sprintf_s(dbg, "[ChineseIME] readCandidates: count=%u, sel=%u\n", (unsigned int)count, (unsigned int)candList->dwSelection);
+    OutputDebugStringA(dbg);
+
     if (count > 20) count = 20;
 
     for (DWORD i = 0; i < count; i++) {
         wchar_t* str = (wchar_t*)(buf.data() + candList->dwOffset[i]);
+        sprintf_s(dbg, "[ChineseIME] readCandidates: cand[%u]='%S'\n", i, str);
+        OutputDebugStringA(dbg);
         lastCandidates_.push_back(str);
     }
     lastSelectedIndex_ = (int)candList->dwSelection;
+
+    sprintf_s(dbg, "[ChineseIME] readCandidates: invoking callback with %d candidates\n", (int)lastCandidates_.size());
+    OutputDebugStringA(dbg);
 
     std::vector<const wchar_t*> ptrs;
     for (const auto& c : lastCandidates_) {
@@ -141,6 +162,9 @@ void WinEventBridge::readCandidates(HIMC himc) {
     }
 
     callbacks_.candidateCallback(ptrs.data(), (int)ptrs.size(), lastSelectedIndex_);
+
+    sprintf_s(dbg, "[ChineseIME] readCandidates: callback done\n");
+    OutputDebugStringA(dbg);
 }
 
 void WinEventBridge::processImeComposition(HWND hwnd, LPARAM lParam) {
@@ -225,6 +249,9 @@ LRESULT CALLBACK WinEventBridge::ImeWndProc(HWND hWnd, UINT msg, WPARAM wParam, 
     auto& bridge = WinEventBridge::get();
 
     char dbg[256];
+    sprintf_s(dbg, "[ChineseIME] ImeWndProc: msg=0x%04X, hwnd=0x%p\n", msg, (void*)hWnd);
+    OutputDebugStringA(dbg);
+
     if (msg >= 0x100 && msg <= 0x108) {
         sprintf_s(dbg, "[ChineseIME] Key msg: msg=0x%04X, wParam=0x%X\n", msg, (DWORD)wParam);
         OutputDebugStringA(dbg);
@@ -254,9 +281,15 @@ LRESULT CALLBACK WinEventBridge::ImeWndProc(HWND hWnd, UINT msg, WPARAM wParam, 
         }
 
         case WM_IME_NOTIFY: {
-            sprintf_s(dbg, "[ChineseIME] WM_IME_NOTIFY wParam=%d\n", (int)wParam);
+            sprintf_s(dbg, "[ChineseIME] WM_IME_NOTIFY wParam=%d (IMN_OPENCANDIDATE=%d)\n", (int)wParam, IMN_OPENCANDIDATE);
             OutputDebugStringA(dbg);
             bridge.processImeNotify(wParam, lParam);
+            break;
+        }
+
+        case WM_IME_SETCONTEXT: {
+            sprintf_s(dbg, "[ChineseIME] WM_IME_SETCONTEXT wParam=0x%X, lParam=0x%X\n", (DWORD)wParam, (DWORD)lParam);
+            OutputDebugStringA(dbg);
             break;
         }
     }

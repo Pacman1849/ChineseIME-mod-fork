@@ -97,8 +97,6 @@ private static void loadNative() {
                 cachedDllPath = tempDir.resolve("chineseime_native.dll");
                 Files.copy(dllStream, cachedDllPath, StandardCopyOption.REPLACE_EXISTING);
                 dllStream.close();
-                cachedDllPath.toFile().deleteOnExit();
-                tempDir.toFile().deleteOnExit();
                 ChineseIMEInitializer.LOGGER.info("[ChineseIME] DLL extracted to: {}", cachedDllPath);
             } else {
                 ChineseIMEInitializer.LOGGER.warn("[ChineseIME] DLL not found in JAR at {}, using fallback", nativesPath);
