@@ -54,6 +54,9 @@ public class NativeImeBridge {
     private static KeyboardStateCallback sKeyboardCallback = null;
 
     public static boolean isAvailable() {
+        if (!loadAttempted) {
+            getInstance();
+        }
         return loaded && INSTANCE != null;
     }
 
@@ -225,6 +228,38 @@ private static void loadNative() {
         return isAvailable() ? INSTANCE.GetInputMethodType() : 0;
     }
 
+    public static void setEventCallbacks(
+            PreeditCallback preedit,
+            CommitCallback commit,
+            CandidateCallback candidate,
+            ImeChangeCallback imeChange,
+            KeyboardCallback keyboard) {
+        if (!isAvailable()) return;
+        INSTANCE.SetEventCallbacks(preedit, commit, candidate, imeChange, keyboard);
+    }
+
+    public static void hookWindowProc(long hwnd) {
+        if (!isAvailable()) return;
+        Pointer hwndPtr = hwnd != 0L ? Pointer.createConstant(hwnd) : null;
+        INSTANCE.HookWindowProc(hwndPtr);
+    }
+
+    public static void unhookWindowProc() {
+        if (isAvailable()) {
+            INSTANCE.UnhookWindowProc();
+        }
+    }
+
+    public static void refreshCandidates() {
+        if (isAvailable()) {
+            INSTANCE.RefreshCandidates();
+        }
+    }
+
+    public static boolean isWindowHooked() {
+        return isAvailable() && INSTANCE.IsWindowHooked() == 1;
+    }
+
     public static InputMode getInputMethodTypeAsEnum() {
         return getInputMethodTypeAsEnum(getInputMethodType());
     }
@@ -259,6 +294,23 @@ private static void loadNative() {
         return getInputMethodTypeString(getInputMethodType());
     }
 
+    public static long getGlfwWin32Window(long glfwWindow) {
+        if (glfwWindow == 0) return 0;
+        try {
+            com.sun.jna.NativeLibrary glfw = com.sun.jna.NativeLibrary.getInstance("glfw");
+            com.sun.jna.Function func = glfw.getFunction("glfwGetWin32Window");
+            if (func != null) {
+                Object result = func.invoke(long.class, new Object[]{glfwWindow});
+                if (result != null) {
+                    return (Long) result;
+                }
+            }
+        } catch (Exception e) {
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] glfwGetWin32Window not available: {}", e.getMessage());
+        }
+        return glfwWindow;
+    }
+
     public interface NativeLibrary extends StdCallLibrary {
         String GetDllVersion();
         int StartListen(Pointer hwnd);
@@ -287,5 +339,36 @@ private static void loadNative() {
                           LayoutChangeCallback layoutChange,
                           ModeChangeCallback modeChange,
                           KeyboardStateCallback keyboardState);
+
+        void SetEventCallbacks(
+            PreeditCallback preedit,
+            CommitCallback commit,
+            CandidateCallback candidate,
+            ImeChangeCallback imeChange,
+            KeyboardCallback keyboard);
+        void HookWindowProc(Pointer hwnd);
+        void UnhookWindowProc();
+        void RefreshCandidates();
+        int IsWindowHooked();
+    }
+
+    public interface PreeditCallback extends Callback {
+        void invoke(WString text, int cursorPos, int selStart, int selLen);
+    }
+
+    public interface CommitCallback extends Callback {
+        void invoke(WString text);
+    }
+
+    public interface CandidateCallback extends Callback {
+        void invoke(Pointer candidates, int count, int selectedIndex);
+    }
+
+    public interface ImeChangeCallback extends Callback {
+        void invoke(int inputMethodType, int chineseMode);
+    }
+
+    public interface KeyboardCallback extends Callback {
+        void invoke(int capsLock, int shiftMode);
     }
 }

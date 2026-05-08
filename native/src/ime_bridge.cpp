@@ -4,6 +4,8 @@
 #include "imm32_monitor.h"
 #include "jni_callback.h"
 #include "sta_thread.h"
+#include "win_event_bridge.h"
+#include "ime_callback.h"
 #include <windows.h>
 #include <imm.h>
 #include <string>
@@ -37,6 +39,12 @@
 
 namespace {
 
+PreeditCallback g_preeditCallback = nullptr;
+CommitCallback g_commitCallback = nullptr;
+CandidateCallback g_candidateCallback = nullptr;
+ImeChangeCallback g_imeChangeCallback = nullptr;
+KeyboardCallback g_keyboardCallback = nullptr;
+
 std::unique_ptr<chineseime::StaThread> g_staThread;
 std::unique_ptr<chineseime::TsfMonitor> g_tsfMonitor;
 std::unique_ptr<chineseime::Imm32Monitor> g_imm32Monitor;
@@ -48,7 +56,7 @@ std::thread g_pollingThread;
 std::atomic<bool> g_pollingRunning{false};
 HWND g_targetWindow = nullptr;
 
-const char* VERSION = "2.1.0";
+const char* VERSION = "2.2.0";
 
 bool IsChineseLangId(LANGID langId) {
     return langId == 0x0804 || langId == 0x0404 || langId == 0x0C04 || langId == 0x1404;
@@ -88,7 +96,10 @@ void PollKeyboardState() {
     bool capsLockOn = false;
     bool shiftPressed = false;
 
-    HWND fgWnd = GetForegroundWindow();
+    HWND fgWnd = g_targetWindow;
+    if (!fgWnd) fgWnd = GetForegroundWindow();
+    if (!fgWnd) fgWnd = GetActiveWindow();
+
     if (fgWnd) {
         DWORD fgThreadId = GetWindowThreadProcessId(fgWnd, nullptr);
         DWORD pollThreadId = GetCurrentThreadId();
@@ -96,15 +107,21 @@ void PollKeyboardState() {
             AttachThreadInput(pollThreadId, fgThreadId, TRUE);
         }
 
-        capsLockOn = (GetKeyState(VK_CAPITAL) & 0x0001) != 0;
-        shiftPressed = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+        BYTE keyboardState[256];
+        if (GetKeyboardState(keyboardState)) {
+            capsLockOn = (keyboardState[VK_CAPITAL] & 0x01) != 0;
+            shiftPressed = (keyboardState[VK_SHIFT] & 0x80) != 0;
+        }
 
         if (fgThreadId != pollThreadId) {
             AttachThreadInput(pollThreadId, fgThreadId, FALSE);
         }
     } else {
-        capsLockOn = (GetKeyState(VK_CAPITAL) & 0x0001) != 0;
-        shiftPressed = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+        BYTE keyboardState[256];
+        if (GetKeyboardState(keyboardState)) {
+            capsLockOn = (keyboardState[VK_CAPITAL] & 0x01) != 0;
+            shiftPressed = (keyboardState[VK_SHIFT] & 0x80) != 0;
+        }
     }
 
     chineseime::ImeStateManager::get().updateKeyboardState(capsLockOn, shiftPressed);
@@ -145,10 +162,21 @@ void PollIMEState() {
     }
     mgr.updateChineseMode(chineseMode);
 
+    DWORD fgThreadId = GetWindowThreadProcessId(fgWnd, nullptr);
+    DWORD pollThreadId = GetCurrentThreadId();
+    BOOL attached = FALSE;
+    if (fgThreadId != pollThreadId) {
+        attached = AttachThreadInput(pollThreadId, fgThreadId, TRUE);
+    }
+
     HKL hkl = GetKeyboardLayout(0);
     chineseime::InputMethodType detectedType = chineseime::InputMethodType::UNKNOWN;
     if (hkl) {
         detectedType = DetectInputMethodTypeFromHkl(hkl);
+    }
+
+    if (attached) {
+        AttachThreadInput(pollThreadId, fgThreadId, FALSE);
     }
 
     auto cachedType = mgr.getSnapshot().inputMethodType;
@@ -494,7 +522,11 @@ __declspec(dllexport) int GetCapsLockState(void) {
 }
 
 __declspec(dllexport) int GetKeyboardStateForPolling(int vKey) {
-    return (GetKeyState(vKey) & 0x8000) ? 1 : 0;
+    BYTE keyboardState[256];
+    if (GetKeyboardState(keyboardState)) {
+        return (keyboardState[vKey] & 0x80) ? 1 : 0;
+    }
+    return 0;
 }
 
 __declspec(dllexport) void SetTargetWindow(void* hwnd) {
@@ -521,6 +553,71 @@ __declspec(dllexport) int HasLayoutChanged(void) {
 long GetKeyboardLayoutHKL(void) {
     HKL hkl = GetKeyboardLayout(0);
     return (long)reinterpret_cast<DWORD_PTR>(hkl);
+}
+
+__declspec(dllexport) void SetEventCallbacks(
+    void* preedit,
+    void* commit,
+    void* candidate,
+    void* imeChange,
+    void* keyboard) {
+    g_preeditCallback = reinterpret_cast<PreeditCallback>(preedit);
+    g_commitCallback = reinterpret_cast<CommitCallback>(commit);
+    g_candidateCallback = reinterpret_cast<CandidateCallback>(candidate);
+    g_imeChangeCallback = reinterpret_cast<ImeChangeCallback>(imeChange);
+    g_keyboardCallback = reinterpret_cast<KeyboardCallback>(keyboard);
+
+    chineseime::WinEventBridge::get().setCallbacks({
+        [preedit](const wchar_t* text, int cursorPos, int selStart, int selLen) {
+            if (g_preeditCallback) g_preeditCallback(text, cursorPos, selStart, selLen);
+        },
+        [commit](const wchar_t* text) {
+            if (g_commitCallback) g_commitCallback(text);
+        },
+        [candidate](const wchar_t** cands, int count, int selIdx) {
+            if (g_candidateCallback) g_candidateCallback(cands, count, selIdx);
+        },
+        [](int imeType, int cmode) {
+            if (g_imeChangeCallback) g_imeChangeCallback(imeType, cmode);
+        },
+        [](int caps, int shift) {
+            if (g_keyboardCallback) g_keyboardCallback(caps, shift);
+        }
+    });
+
+    OutputDebugStringA("[ChineseIME] Event callbacks registered\n");
+}
+
+__declspec(dllexport) void HookWindowProc(void* hwnd) {
+    char dbg[128];
+    sprintf_s(dbg, "[ChineseIME] HookWindowProc called with hwnd=0x%llX\n", (unsigned long long)hwnd);
+    OutputDebugStringA(dbg);
+
+    HWND h = hwnd ? reinterpret_cast<HWND>(hwnd) : nullptr;
+    sprintf_s(dbg, "[ChineseIME] HookWindowProc: HWND from void* = 0x%p\n", (void*)h);
+    OutputDebugStringA(dbg);
+
+    if (h) {
+        SetTargetWindow(hwnd);
+        sprintf_s(dbg, "[ChineseIME] HookWindowProc: calling hookWindow\n");
+        OutputDebugStringA(dbg);
+    }
+    chineseime::WinEventBridge::get().hookWindow(h);
+    sprintf_s(dbg, "[ChineseIME] HookWindowProc: hookWindow returned, hooked=%d\n",
+        chineseime::WinEventBridge::get().isHooked() ? 1 : 0);
+    OutputDebugStringA(dbg);
+}
+
+__declspec(dllexport) void UnhookWindowProc(void) {
+    chineseime::WinEventBridge::get().unhookWindow();
+}
+
+__declspec(dllexport) void RefreshCandidates(void) {
+    chineseime::WinEventBridge::get().refreshCandidates();
+}
+
+__declspec(dllexport) int IsWindowHooked(void) {
+    return chineseime::WinEventBridge::get().isHooked() ? 1 : 0;
 }
 
 } // extern "C"
