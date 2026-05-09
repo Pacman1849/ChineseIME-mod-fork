@@ -114,53 +114,52 @@ void WinEventBridge::readCandidates(HIMC himc) {
     DWORD bufSize = ImmGetCandidateListW(himc, 0, nullptr, 0);
 
     char dbg[256];
-    sprintf_s(dbg, "[ChineseIME] readCandidates: himc=0x%llX, bufSize=%u\n",
-        (unsigned long long)himc, (unsigned int)bufSize);
+    sprintf_s(dbg, "[ChineseIME] readCandidates: bufSize=%u\n", (unsigned int)bufSize);
     OutputDebugStringA(dbg);
 
-    if (bufSize == 0) {
+    if (bufSize > 0) {
+        std::vector<char> buf(bufSize);
+        CANDIDATELIST* candList = reinterpret_cast<CANDIDATELIST*>(buf.data());
+        if (!ImmGetCandidateListW(himc, 0, candList, bufSize)) {
+            OutputDebugStringA("[ChineseIME] readCandidates: ImmGetCandidateListW failed\n");
+            return;
+        }
+
+        lastCandidates_.clear();
+        DWORD count = candList->dwCount;
+        lastSelectedIndex_ = (int)candList->dwSelection;
+
+        if (count > 20) count = 20;
+
+        for (DWORD i = 0; i < count; i++) {
+            wchar_t* str = (wchar_t*)(buf.data() + candList->dwOffset[i]);
+            lastCandidates_.push_back(str);
+        }
+
+        sprintf_s(dbg, "[ChineseIME] readCandidates: %d candidates, sel=%d\n",
+            (int)lastCandidates_.size(), lastSelectedIndex_);
+        OutputDebugStringA(dbg);
+
         if (!lastCandidates_.empty()) {
-            lastCandidates_.clear();
-            lastSelectedIndex_ = 0;
-            if (callbacks_.candidateCallback) {
-                callbacks_.candidateCallback(nullptr, 0, 0);
+            std::vector<const wchar_t*> ptrs;
+            for (const auto& c : lastCandidates_) {
+                ptrs.push_back(c.c_str());
             }
-            ImeStateManager::get().updateCandidates(L"", {}, 0);
+            if (callbacks_.candidateCallback) {
+                callbacks_.candidateCallback(ptrs.data(), (int)ptrs.size(), lastSelectedIndex_);
+            }
         }
-        return;
-    }
 
-    std::vector<char> buf(bufSize);
-    CANDIDATELIST* candList = reinterpret_cast<CANDIDATELIST*>(buf.data());
-    if (!ImmGetCandidateListW(himc, 0, candList, bufSize)) {
-        OutputDebugStringA("[ChineseIME] readCandidates: ImmGetCandidateListW failed\n");
-        return;
-    }
-
-    lastCandidates_.clear();
-    DWORD count = candList->dwCount;
-    lastSelectedIndex_ = (int)candList->dwSelection;
-
-    if (count > 20) count = 20;
-
-    for (DWORD i = 0; i < count; i++) {
-        wchar_t* str = (wchar_t*)(buf.data() + candList->dwOffset[i]);
-        lastCandidates_.push_back(str);
-    }
-
-    sprintf_s(dbg, "[ChineseIME] readCandidates: count=%u, sel=%d\n",
-        (unsigned int)count, lastSelectedIndex_);
-    OutputDebugStringA(dbg);
-
-    if (callbacks_.candidateCallback && !lastCandidates_.empty()) {
-        std::vector<const wchar_t*> ptrs;
-        for (const auto& c : lastCandidates_) {
-            ptrs.push_back(c.c_str());
+        ImeStateManager::get().updateCandidates(lastComposition_, lastCandidates_, lastSelectedIndex_);
+    } else {
+        OutputDebugStringA("[ChineseIME] readCandidates: IMM32 returned 0, trying TSF candidates\n");
+        auto state = ImeStateManager::get().getSnapshot();
+        if (!state.candidates.empty()) {
+            lastCandidates_ = state.candidates;
+            lastSelectedIndex_ = state.selectedIndex;
+            OutputDebugStringA("[ChineseIME] readCandidates: using cached TSF candidates\n");
         }
-        callbacks_.candidateCallback(ptrs.data(), (int)ptrs.size(), lastSelectedIndex_);
     }
-
-    ImeStateManager::get().updateCandidates(lastComposition_, lastCandidates_, lastSelectedIndex_);
 }
 
 void WinEventBridge::processImeComposition(HWND hwnd, LPARAM lParam) {

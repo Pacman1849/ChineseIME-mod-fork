@@ -581,9 +581,14 @@ bool TsfMonitor::getCandidateListFromProperty(ITfContext* pic, std::vector<std::
     candidates.clear();
     selectedIndex = 0;
 
+    if (!pic) return false;
+
+    DEBUG_LOG_SIMPLE(L"[ChineseIME] getCandidateListFromProperty: trying GUID_PROP_CANDIDATE\n");
+
     ITfProperty* prop = nullptr;
     HRESULT hr = pic->GetProperty(GUID_PROP_CANDIDATE, &prop);
     if (FAILED(hr) || !prop) {
+        DEBUG_LOG_SIMPLE(L"[ChineseIME] getCandidateListFromProperty: no GUID_PROP_CANDIDATE property\n");
         return false;
     }
 
@@ -591,15 +596,16 @@ bool TsfMonitor::getCandidateListFromProperty(ITfContext* pic, std::vector<std::
     hr = prop->EnumRanges(ecReadOnly_, &enumRanges, nullptr);
     prop->Release();
     if (FAILED(hr) || !enumRanges) {
+        DEBUG_LOG_SIMPLE(L"[ChineseIME] getCandidateListFromProperty: cannot enum ranges\n");
         return false;
     }
 
     ITfRange* range = nullptr;
     while (enumRanges->Next(1, &range, nullptr) == S_OK) {
         if (range) {
-            wchar_t buffer[64];
+            wchar_t buffer[256];
             ULONG fetched = 0;
-            hr = range->GetText(ecReadOnly_, 0, buffer, 63, &fetched);
+            hr = range->GetText(ecReadOnly_, 0, buffer, 255, &fetched);
             if (SUCCEEDED(hr) && fetched > 0) {
                 buffer[fetched] = 0;
                 candidates.push_back(buffer);
@@ -608,7 +614,14 @@ bool TsfMonitor::getCandidateListFromProperty(ITfContext* pic, std::vector<std::
         }
     }
     enumRanges->Release();
-    return !candidates.empty();
+
+    if (!candidates.empty()) {
+        DEBUG_LOG(L"[ChineseIME] getCandidateListFromProperty: got %d candidates\n", (int)candidates.size());
+        return true;
+    }
+
+    DEBUG_LOG_SIMPLE(L"[ChineseIME] getCandidateListFromProperty: no candidates from property\n");
+    return false;
 }
 
 void TsfMonitor::updateInputMethodType(LANGID langid, REFCLSID clsid, REFGUID guidProfile) {
