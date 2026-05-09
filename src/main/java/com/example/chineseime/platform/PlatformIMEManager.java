@@ -7,6 +7,7 @@ import com.example.chineseime.engine.PinyinDictionary;
 import com.example.chineseime.hud.CandidateHud;
 import com.example.chineseime.hud.ImeStatusIndicator;
 import com.example.chineseime.hud.VerticalCandidateHud;
+import com.example.chineseime.platform.win32.NativeImeBridge;
 import com.example.chineseime.platform.win32.WindowsIMEEventBridge;
 import net.minecraft.client.gui.DrawContext;
 import java.util.List;
@@ -15,6 +16,7 @@ public class PlatformIMEManager {
     private final ModConfig config;
     private final CandidateHud horizontalHud;
     private final VerticalCandidateHud verticalHud;
+    private final ImeStatusIndicator statusIndicator;
     private WindowsIMEEventBridge eventBridge;
     private boolean syncEnabled = false;
 
@@ -22,6 +24,7 @@ public class PlatformIMEManager {
         this.config = config;
         this.horizontalHud = horizontalHud;
         this.verticalHud = verticalHud;
+        this.statusIndicator = indicator;
 
         if (getPlatform() == OS.WINDOWS) {
             initWindowsIME(indicator, windowHandle);
@@ -48,6 +51,19 @@ public class PlatformIMEManager {
     }
 
     public void tick() {
+        if (eventBridge != null && syncEnabled) {
+            NativeImeBridge.refreshImeState();
+            eventBridge.updateFromNativeState();
+
+            InputMode mode = eventBridge.getDetectedInputMode();
+            boolean chineseMode = eventBridge.isChineseMode();
+            boolean capsLock = eventBridge.isCapsLockOn();
+            boolean shiftMode = eventBridge.isInShiftMode();
+
+            if (statusIndicator != null) {
+                statusIndicator.update(chineseMode, mode, capsLock, shiftMode);
+            }
+        }
     }
 
     public boolean isChineseMode() {

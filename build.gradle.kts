@@ -55,14 +55,15 @@ dependencies {
 
 tasks.processResources {
     inputs.properties("version" to version)
-    
+
     filesMatching("fabric.mod.json") {
         expand("version" to version)
     }
-    
-    // 复制native DLL文件到JAR中
+
+    // 复制native DLL文件到JAR中 (按架构分类)
     from("natives/Release") {
-        into("META-INF/natives")
+        into("META-INF/natives/amd64")
+        include("*.dll")
     }
 }
 

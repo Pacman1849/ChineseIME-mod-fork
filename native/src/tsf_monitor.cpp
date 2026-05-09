@@ -567,7 +567,14 @@ bool TsfMonitor::getCompositionString(ITfContext* pic, std::wstring& result) {
 bool TsfMonitor::getCandidateList(ITfContext* pic, std::vector<std::wstring>& candidates, int& selectedIndex) {
     candidates.clear();
     selectedIndex = 0;
-    return getCandidateListFromProperty(pic, candidates, selectedIndex);
+
+    if (!pic) return false;
+
+    if (getCandidateListFromProperty(pic, candidates, selectedIndex)) {
+        return true;
+    }
+
+    return false;
 }
 
 bool TsfMonitor::getCandidateListFromProperty(ITfContext* pic, std::vector<std::wstring>& candidates, int& selectedIndex) {

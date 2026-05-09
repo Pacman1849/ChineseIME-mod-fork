@@ -226,11 +226,6 @@ void PollIMEState() {
     int selectedIndex = 0;
     size_t bufSize = ImmGetCandidateList(himc, 0, nullptr, 0);
 
-    char dbgBuf[256];
-    sprintf_s(dbgBuf, "[ChineseIME] PollIME: fgWnd=0x%X, himc=0x%X, bufSize=%zu, imeOpen=%d, compLen=%d\n",
-        (DWORD)(DWORD_PTR)fgWnd, (DWORD)(DWORD_PTR)himc, bufSize, imeOpen, (int)compLen);
-    OutputDebugStringA(dbgBuf);
-
     if (bufSize > 0) {
         std::vector<char> candBuf(bufSize);
         CANDIDATELIST* candList = reinterpret_cast<CANDIDATELIST*>(candBuf.data());
@@ -242,11 +237,14 @@ void PollIMEState() {
             wchar_t* pStr = (wchar_t*)(candBuf.data() + candList->dwOffset[j]);
             candidates.push_back(pStr);
         }
+        char dbgBuf[256];
         sprintf_s(dbgBuf, "[ChineseIME] PollIME: got %d candidates, sel=%d\n", (int)count, selectedIndex);
         OutputDebugStringA(dbgBuf);
     }
 
-    mgr.updateCandidates(composition, candidates, selectedIndex);
+    if (!composition.empty() || !candidates.empty()) {
+        mgr.updateCandidates(composition, candidates, selectedIndex);
+    }
 
     ImmReleaseContext(fgWnd, himc);
 }
@@ -346,60 +344,15 @@ __declspec(dllexport) int StartTsfListen(void) {
         PollIMEState();
         {
             auto initialState = chineseime::ImeStateManager::get().getSnapshot();
-            bool isChineseIM = initialState.inputMethodType != chineseime::InputMethodType::ENGLISH &&
-                initialState.inputMethodType != chineseime::InputMethodType::UNKNOWN;
             char buf[256];
-            sprintf_s(buf, "[ChineseIME] Init: IME=%d, CMode=%d, Caps=%d, ShiftM=%d\n",
+            sprintf_s(buf, "[ChineseIME] Init: IME=%d, CMode=%d, Caps=%d\n",
                 (int)initialState.inputMethodType, initialState.chineseMode ? 1 : 0,
-                initialState.capsLockOn ? 1 : 0, (isChineseIM && !initialState.chineseMode && initialState.imeOpen) ? 1 : 0);
+                initialState.capsLockOn ? 1 : 0);
             OutputDebugStringA(buf);
-            chineseime::onImeStateChanged(static_cast<int>(initialState.inputMethodType), initialState.chineseMode);
-            chineseime::onKeyboardStateChanged(initialState.capsLockOn ? 1 : 0,
-                (isChineseIM && !initialState.chineseMode && initialState.imeOpen) ? 1 : 0);
         }
         while (g_pollingRunning.load()) {
             PollKeyboardState();
             PollIMEState();
-
-            auto changes = chineseime::ImeStateManager::get().checkChanges();
-            auto state = chineseime::ImeStateManager::get().getSnapshot();
-
-            if (changes.inputMethodChanged || changes.chineseModeChanged) {
-                char buf[256];
-                sprintf_s(buf, "[ChineseIME] State: IME=%d, CMode=%d\n",
-                    (int)state.inputMethodType, state.chineseMode ? 1 : 0);
-                OutputDebugStringA(buf);
-                chineseime::onImeStateChanged(static_cast<int>(state.inputMethodType), state.chineseMode);
-            }
-
-            if (changes.candidatesChanged || changes.compositionChanged) {
-                std::vector<const wchar_t*> ptrs;
-                for (const auto& c : state.candidates) {
-                    ptrs.push_back(c.c_str());
-                }
-                char buf[256];
-                sprintf_s(buf, "[ChineseIME] Candidates: comp='%S', count=%d\n",
-                    state.composition.c_str(), (int)ptrs.size());
-                OutputDebugStringA(buf);
-                chineseime::onCandidateChanged(
-                    state.composition.c_str(),
-                    ptrs.empty() ? nullptr : ptrs.data(),
-                    static_cast<int>(ptrs.size()),
-                    state.selectedIndex
-                );
-            }
-
-            if (changes.capsLockChanged || changes.shiftModeChanged) {
-                bool inShiftMode = (state.inputMethodType != chineseime::InputMethodType::ENGLISH &&
-                    state.inputMethodType != chineseime::InputMethodType::UNKNOWN &&
-                    !state.chineseMode);
-                char buf[256];
-                sprintf_s(buf, "[ChineseIME] Kbd: Caps=%d, ShiftM=%d\n",
-                    state.capsLockOn ? 1 : 0, inShiftMode ? 1 : 0);
-                OutputDebugStringA(buf);
-                chineseime::onKeyboardStateChanged(state.capsLockOn ? 1 : 0, inShiftMode ? 1 : 0);
-            }
-
             Sleep(16);
         }
         DEBUG_LOG_SIMPLE("[ChineseIME] Polling thread stopped\n");
@@ -566,24 +519,6 @@ __declspec(dllexport) void SetEventCallbacks(
     g_candidateCallback = reinterpret_cast<CandidateCallback>(candidate);
     g_imeChangeCallback = reinterpret_cast<ImeChangeCallback>(imeChange);
     g_keyboardCallback = reinterpret_cast<KeyboardCallback>(keyboard);
-
-    chineseime::WinEventBridge::get().setCallbacks({
-        [preedit](const wchar_t* text, int cursorPos, int selStart, int selLen) {
-            if (g_preeditCallback) g_preeditCallback(text, cursorPos, selStart, selLen);
-        },
-        [commit](const wchar_t* text) {
-            if (g_commitCallback) g_commitCallback(text);
-        },
-        [candidate](const wchar_t** cands, int count, int selIdx) {
-            if (g_candidateCallback) g_candidateCallback(cands, count, selIdx);
-        },
-        [](int imeType, int cmode) {
-            if (g_imeChangeCallback) g_imeChangeCallback(imeType, cmode);
-        },
-        [](int caps, int shift) {
-            if (g_keyboardCallback) g_keyboardCallback(caps, shift);
-        }
-    });
 
     OutputDebugStringA("[ChineseIME] Event callbacks registered\n");
 }
