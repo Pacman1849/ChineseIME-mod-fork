@@ -67,16 +67,27 @@
 - [x] CandidateHud visible 计算逻辑（composition 非空时也显示）
 - [x] `tsf_monitor.cpp` 用空候选词覆盖有效数据的问题
 - [x] `isAvailable()` 不调用 `getInstance()` 导致 DLL 从不加载
+- [x] **IME 类型检测错误** - 拼音显示"倉"的问题
+  - `updateInputMethodType()` GUID 不匹配时返回 `OTHER_CHINESE` → Java 映射为 CANGJIE
+  - 修复：使用语言区域默认（zh-CN → PINYIN，zh-TW → CANGJIE）
+  - `queryCurrentInputMethod()` 枚举所有 profiles 而非当前活动 profile
+  - `PollIMEState()` 首次检测后永不更新
+  - `pollUpdate()` 只在 UNKNOWN/ENGLISH 时查询
+  - 2026-05-10: 添加全面调试日志，修复以上所有问题
 
 ---
 
 ## 进行中 🔄
 
+### IME 类型检测验证
+- **问题**: 拼音输入法被错误识别为仓颉
+- **修复**: 2026-05-10 修复了 5 个相关 bug
+- **待验证**: DebugView 日志确认类型检测正确
+
 ### 候选词同步
 - **问题**: IMM32 `ImmGetCandidateList` 对 TSF 架构输入法返回 0
 - **解决方案**: 启用 TSF Polling 通过 `GUID_PROP_CANDIDATE` 读取候选词
-- **状态**: 2026-05-09 已添加 `startTsfListening()` 调用
-- **待验证**: TSF 轮询是否正确获取候选词并回调 Java
+- **状态**: 已实现，待完整验证
 
 ---
 
@@ -131,12 +142,13 @@ ChineseIME-Fabric-1.21.4/
 
 ## 当前状态
 
-- **C++ DLL**: `natives/Release/chineseime_native.dll` (编译成功)
+- **C++ DLL**: `natives/Release/chineseime_native.dll` (编译成功, 2026-05-10 调试版)
 - **Java Mod**: `build/libs/chineseime-1.0.0.jar` (编译成功)
 - **部署位置**: PrismLauncher mods 文件夹
 - **DLL 加载**: 已修复 `isAvailable()` 自动调用 `getInstance()`
-- **WndProc Hook**: 已实现，DebugView 可看到 `WM_IME_NOTIFY` 消息
-- **TSF Polling**: 已添加 `startTsfListening()` 调用，待验证
+- **WndProc Hook**: 已实现
+- **TSF Polling**: 已实现
+- **IME 类型检测**: 调试版本已部署（2026-05-10），待 DebugView 验证
 
 ---
 
@@ -153,6 +165,17 @@ ChineseIME-Fabric-1.21.4/
 ---
 
 ## 已知问题
+
+### IME 类型检测错误（拼音显示"倉"）⚠️ 重点排查
+- **现象**: 英文正确显示"En"，拼音显示"倉"，速成也显示"倉"；一旦错误检测后切换输入法不会更新
+- **根本原因**: 多层检测逻辑的 bug 链：
+  1. TSF GUID 比较失败 → `OTHER_CHINESE` → Java 映射为 `CANGJIE`
+  2. `queryCurrentInputMethod()` 枚举所有 profiles 而非活动 profile
+  3. `PollIMEState()` 首次检测后永不更新（`tsfHasSetType` 永远为 true）
+  4. `pollUpdate()` 只在 UNKNOWN/ENGLISH 时查询
+- **修复状态**: 2026-05-10 已修复所有 bug，添加全面调试日志
+- **验证方法**: 启动游戏，用 DebugView 过滤 `[ChineseIME]` 查看日志
+- **详细分析**: 见 `documents/IME_Detection_Debug.md`
 
 ### 候选词不同步（TSF IME）
 - **影响**: 微软拼音、微软五笔等现代 TSF 输入法的候选词
@@ -192,10 +215,9 @@ ChineseIME-Fabric-1.21.4/
 ### 调试方法
 - C++ 调试输出: 使用 Windows DebugView 工具查看 `OutputDebugStringA`
 - Java 调试输出: 查看游戏日志中的 `[ChineseIME]` 前缀日志
-- **关键日志序列**:
-  1. `[ChineseIME] Loading native library...`
-  2. `[ChineseIME] DLL loaded successfully`
-  3. `[ChineseIME] WindowsIMEEventBridge.initialize() called with hwnd=0x...`
-  4. `[ChineseIME] TSF listening started: 1`
-  5. `[ChineseIME] Preedit: '...'` (收到输入内容)
-  6. `[ChineseIME] Candidates: count=X` (收到候选词)
+- **关键日志序列（IME 类型检测）**:
+  1. `PollIME #N: kl=00000804, imeId=0x0, detected=N, cached=N, imeOpen=1` (轮询)
+  2. `PollIME: updating IME type X -> Y` (类型变更)
+  3. `OnActivated: profileType=N, langid=0x0804` (TSF 事件)
+  4. `updateInputMethodType: langid=0x0804, clsid=...` (GUID 匹配)
+  5. `ImeStateManager::updateInputMethod: X -> Y` (状态更新)

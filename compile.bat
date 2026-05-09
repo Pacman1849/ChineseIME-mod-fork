@@ -1,3 +1,4 @@
+@echo on
 cd native
 cmake -B build
 cmake --build build --config Release

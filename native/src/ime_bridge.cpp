@@ -129,6 +129,10 @@ void PollKeyboardState() {
 void PollIMEState() {
     chineseime::ImeStateManager& mgr = chineseime::ImeStateManager::get();
 
+    static int pollCount = 0;
+    pollCount++;
+    bool verbose = pollCount <= 10 || pollCount % 300 == 0;
+
     HWND fgWnd = g_targetWindow;
     if (!fgWnd) fgWnd = GetForegroundWindow();
     if (!fgWnd) fgWnd = GetActiveWindow();
@@ -169,35 +173,69 @@ void PollIMEState() {
     }
 
     HKL hkl = GetKeyboardLayout(0);
+    WCHAR klName[16] = {0};
+    GetKeyboardLayoutNameW(klName);
     chineseime::InputMethodType detectedType = chineseime::InputMethodType::UNKNOWN;
+    WORD imeId = 0;
     if (hkl) {
         detectedType = DetectInputMethodTypeFromHkl(hkl);
+        DWORD_PTR hklValue = reinterpret_cast<DWORD_PTR>(hkl);
+        imeId = HIWORD(hklValue);
+        
+        // For TSF IMEs, imeId is often 0. Try to extract from layout name
+        if (imeId == 0 && klName[0]) {
+            WCHAR layoutLow = klName[7];
+            WCHAR layoutHigh = klName[6];
+            WORD extractedId = 0;
+            if (layoutLow >= L'0' && layoutLow <= L'9' && layoutHigh >= L'0' && layoutHigh <= L'9') {
+                extractedId = static_cast<WORD>((layoutHigh - L'0') * 16 + (layoutLow - L'0'));
+            } else if (layoutLow >= L'A' && layoutLow <= L'F') {
+                WORD lowNibble = static_cast<WORD>(layoutLow - L'A' + 10);
+                WORD highNibble = static_cast<WORD>(layoutHigh - L'A' + 10);
+                extractedId = static_cast<WORD>(lowNibble + (highNibble << 4));
+            }
+            if (extractedId > 0) {
+                LANGID langId = LOWORD(hklValue);
+                detectedType = chineseime::detectInputMethodTypeFromImeId(extractedId, langId);
+            }
+        }
     }
 
     auto cachedType = mgr.getSnapshot().inputMethodType;
     bool tsfHasSetType = (cachedType != chineseime::InputMethodType::UNKNOWN &&
                           cachedType != chineseime::InputMethodType::ENGLISH);
 
+    if (verbose) {
+        char dbg[256];
+        sprintf_s(dbg, "[ChineseIME] PollIME #%d: kl=%S, imeId=0x%X, detected=%d, cached=%d, imeOpen=%d\n",
+            pollCount, klName, imeId, (int)detectedType, (int)cachedType, imeOpen ? 1 : 0);
+        OutputDebugStringA(dbg);
+    }
+
     if (attached) {
         AttachThreadInput(pollThreadId, fgThreadId, FALSE);
     }
 
-    if (!imeOpen) {
-        if (!tsfHasSetType) {
-            mgr.updateInputMethod(chineseime::InputMethodType::ENGLISH);
+    // Always check for IME type changes when IME is open
+    // Only skip update if types are the same
+    if (imeOpen) {
+        if (detectedType != chineseime::InputMethodType::UNKNOWN &&
+            detectedType != chineseime::InputMethodType::ENGLISH &&
+            detectedType != cachedType) {
+            mgr.updateInputMethod(detectedType);
+            char dbg[256];
+            sprintf_s(dbg, "[ChineseIME] PollIME: updating IME type %d -> %d\n", (int)cachedType, (int)detectedType);
+            OutputDebugStringA(dbg);
         }
     } else {
-        if (tsfHasSetType) {
-            if (detectedType != chineseime::InputMethodType::UNKNOWN &&
-                detectedType != chineseime::InputMethodType::ENGLISH &&
-                detectedType != cachedType) {
-                mgr.updateInputMethod(detectedType);
-            }
-        } else {
-            if (detectedType != chineseime::InputMethodType::UNKNOWN &&
-                detectedType != chineseime::InputMethodType::ENGLISH) {
-                mgr.updateInputMethod(detectedType);
-            }
+        // IME closed, check if we should set ENGLISH
+        bool isChineseCached = (cachedType != chineseime::InputMethodType::ENGLISH &&
+                                cachedType != chineseime::InputMethodType::UNKNOWN);
+        if (isChineseCached) {
+            mgr.updateInputMethod(chineseime::InputMethodType::ENGLISH);
+            char dbg[128];
+            sprintf_s(dbg, "[ChineseIME] PollIME: IME closed, setting ENGLISH\n");
+            OutputDebugStringA(dbg);
         }
     }
 
@@ -280,10 +318,30 @@ __declspec(dllexport) int IsListening(void) {
 }
 
 __declspec(dllexport) int StartTsfListen(void) {
-    if (g_tsfInitialized.load()) return 1;
+    // Use a simple approach - try to create a file to verify this function is called
+    FILE* f = fopen("C:\\Users\\user\\Documents\\ChineseIME-Fabric-1.21.4\\debug_log.txt", "a");
+    if (f) {
+        fprintf(f, "StartTsfListen called\n");
+        fclose(f);
+    }
+    OutputDebugStringA("[ChineseIME] StartTsfListen: called");
+    if (g_tsfInitialized.load()) {
+        OutputDebugStringA("[ChineseIME] StartTsfListen: already initialized");
+        return 1;
+    }
 
     g_staThread = std::make_unique<chineseime::StaThread>();
-    if (!g_staThread->start()) return 0;
+    if (!g_staThread->start()) {
+        OutputDebugStringA("[ChineseIME] StartTsfListen: StaThread start failed");
+        FILE* f2 = fopen("C:\\Users\\user\\Documents\\ChineseIME-Fabric-1.21.4\\debug_log.txt", "a");
+        if (f2) { fprintf(f2, "StaThread start failed\n"); fclose(f2); }
+        return 0;
+    }
+    OutputDebugStringA("[ChineseIME] StartTsfListen: StaThread started");
+
+    // Log to file to verify
+    FILE* f3 = fopen("C:\\Users\\user\\Documents\\ChineseIME-Fabric-1.21.4\\debug_log.txt", "a");
+    if (f3) { fprintf(f3, "StaThread started successfully\n"); fclose(f3); }
 
     std::promise<bool> initPromise;
     std::future<bool> initFuture = initPromise.get_future();
@@ -340,9 +398,6 @@ __declspec(dllexport) int StartTsfListen(void) {
         DEBUG_LOG_SIMPLE("[ChineseIME] Polling thread started\n");
         PollKeyboardState();
         PollIMEState();
-        if (g_tsfMonitor) {
-            g_tsfMonitor->pollUpdate();
-        }
         {
             auto initialState = chineseime::ImeStateManager::get().getSnapshot();
             char buf[256];
