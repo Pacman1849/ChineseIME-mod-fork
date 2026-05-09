@@ -28,6 +28,74 @@ const GUID GUID_MS_WUBI =
 const GUID GUID_MS_SUCHENG =
 { 0x6024b45f, 0x5c54, 0x11d4, { 0xb9, 0x21, 0x00, 0x80, 0xc8, 0x82, 0x68, 0x7e } };
 
+namespace {
+
+class TsfEditSession : public ITfEditSession {
+public:
+    TsfEditSession(ITfContext* pic, std::vector<std::wstring>* result, bool* success)
+        : pic_(pic), result_(result), success_(success), refCount_(1) {
+        *success_ = false;
+    }
+
+    STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override {
+        if (riid == IID_IUnknown || riid == IID_ITfEditSession) {
+            *ppv = static_cast<ITfEditSession*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
+
+    STDMETHODIMP_(ULONG) AddRef() override { return InterlockedIncrement(&refCount_); }
+    STDMETHODIMP_(ULONG) Release() override {
+        LONG count = InterlockedDecrement(&refCount_);
+        if (count == 0) delete this;
+        return count;
+    }
+
+    STDMETHODIMP DoEditSession(TfEditCookie ec) override {
+        ITfProperty* prop = nullptr;
+        HRESULT hr = pic_->GetProperty(GUID_PROP_CANDIDATE, &prop);
+        if (FAILED(hr) || !prop) {
+            return S_OK;
+        }
+
+        IEnumTfRanges* enumRanges = nullptr;
+        hr = prop->EnumRanges(ec, &enumRanges, nullptr);
+        prop->Release();
+        if (FAILED(hr) || !enumRanges) {
+            return S_OK;
+        }
+
+        ITfRange* range = nullptr;
+        while (enumRanges->Next(1, &range, nullptr) == S_OK) {
+            if (range) {
+                wchar_t buffer[256];
+                ULONG fetched = 0;
+                hr = range->GetText(ec, 0, buffer, 255, &fetched);
+                if (SUCCEEDED(hr) && fetched > 0) {
+                    buffer[fetched] = 0;
+                    result_->push_back(buffer);
+                }
+                range->Release();
+            }
+        }
+        enumRanges->Release();
+
+        *success_ = !result_->empty();
+        return S_OK;
+    }
+
+private:
+    ITfContext* pic_;
+    std::vector<std::wstring>* result_;
+    bool* success_;
+    LONG refCount_;
+};
+
+} // anonymous namespace
+
 const GUID GUID_PROP_CANDIDATE =
 { 0xf3a465f7, 0x6be7, 0x4dfb, { 0x82, 0x3a, 0xcf, 0x59, 0x47, 0x16, 0x86, 0x1c } };
 
@@ -87,6 +155,8 @@ TsfMonitor::~TsfMonitor() {
 bool TsfMonitor::initialize(IUnknown* pThreadMgr) {
     if (!pThreadMgr) return false;
 
+    DEBUG_LOG_SIMPLE(L"[ChineseIME] TsfMonitor::initialize: starting\n");
+
     HRESULT hr = pThreadMgr->QueryInterface(IID_ITfThreadMgr, (void**)&threadMgr_);
     if (FAILED(hr)) {
         DEBUG_LOG_SIMPLE(L"[ChineseIME] Failed to get ITfThreadMgr\n");
@@ -107,9 +177,18 @@ bool TsfMonitor::initialize(IUnknown* pThreadMgr) {
             threadMgrSource_ = source;
             DEBUG_LOG_SIMPLE(L"[ChineseIME] Profile sink registered\n");
         } else {
+            char dbg[128];
+            sprintf_s(dbg, "[ChineseIME] AdviseSink failed: hr=0x%X\n", hr);
+            OutputDebugStringA(dbg);
             source->Release();
         }
+    } else {
+        char dbg[128];
+        sprintf_s(dbg, "[ChineseIME] QueryInterface ITfSource failed: hr=0x%X\n", hr);
+        OutputDebugStringA(dbg);
     }
+
+    DEBUG_LOG_SIMPLE(L"[ChineseIME] TsfMonitor::initialize: done\n");
 
     if (docMgr_) {
         ITfContext* ctx = nullptr;
@@ -150,6 +229,15 @@ void TsfMonitor::shutdown() {
 
 void TsfMonitor::refreshState() {
     updateCache();
+}
+
+void TsfMonitor::pollUpdate() {
+    if (currentInputMethod_ == InputMethodType::UNKNOWN || currentInputMethod_ == InputMethodType::ENGLISH) {
+        queryCurrentInputMethod();
+        if (currentInputMethod_ != InputMethodType::UNKNOWN && currentInputMethod_ != InputMethodType::ENGLISH) {
+            ImeStateManager::get().updateInputMethod(currentInputMethod_);
+        }
+    }
 }
 
 STDMETHODIMP TsfMonitor::QueryInterface(REFIID riid, void** ppv) {
@@ -245,16 +333,29 @@ STDMETHODIMP TsfMonitor::EndUIElement(DWORD dwUIElementId) {
 
 STDMETHODIMP TsfMonitor::OnActivated(DWORD dwProfileType, LANGID langid, REFCLSID clsid,
                                      REFGUID guidProfile, REFGUID guidCat, HKL hkl, DWORD dwFlags) {
+    char dbg[256];
+    sprintf_s(dbg, "[ChineseIME] OnActivated: profileType=%d, langid=0x%04X, hkl=0x%IX, flags=0x%X\n",
+        (int)dwProfileType, langid, (DWORD64)hkl, dwFlags);
+    OutputDebugStringA(dbg);
+
     updateInputMethodType(langid, clsid, guidProfile);
 
-    DEBUG_LOG(L"[ChineseIME] OnActivated: type=%d, langid=0x%04x, hkl=0x%08X, flags=0x%x\n",
-        (int)currentInputMethod_, langid, (DWORD)(DWORD_PTR)hkl, dwFlags);
-
     if (dwFlags & TF_IPSINK_FLAG_ACTIVE) {
-        if (currentInputMethod_ != InputMethodType::UNKNOWN) {
+        sprintf_s(dbg, "[ChineseIME] OnActivated: currentInputMethod_=%d, guidProfile=%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X\n",
+            (int)currentInputMethod_,
+            guidProfile.Data1, guidProfile.Data2, guidProfile.Data3,
+            guidProfile.Data4[0], guidProfile.Data4[1], guidProfile.Data4[2], guidProfile.Data4[3],
+            guidProfile.Data4[4], guidProfile.Data4[5], guidProfile.Data4[6], guidProfile.Data4[7]);
+        OutputDebugStringA(dbg);
+
+        if (currentInputMethod_ != InputMethodType::UNKNOWN && currentInputMethod_ != InputMethodType::ENGLISH) {
+            sprintf_s(dbg, "[ChineseIME] OnActivated: updating to %d via TSF GUID\n", (int)currentInputMethod_);
+            OutputDebugStringA(dbg);
             ImeStateManager::get().updateInputMethod(currentInputMethod_);
         } else {
             InputMethodType hklType = detectInputMethodTypeFromHklSafe(hkl);
+            sprintf_s(dbg, "[ChineseIME] OnActivated: TSF GUID failed, hklType=%d\n", (int)hklType);
+            OutputDebugStringA(dbg);
             if (hklType != InputMethodType::UNKNOWN && hklType != InputMethodType::ENGLISH) {
                 currentInputMethod_ = hklType;
                 ImeStateManager::get().updateInputMethod(hklType);
@@ -351,6 +452,10 @@ void TsfMonitor::updateCache() {
 
     if (currentInputMethod_ == InputMethodType::UNKNOWN) {
         queryCurrentInputMethod();
+    }
+
+    if (currentInputMethod_ != InputMethodType::UNKNOWN && currentInputMethod_ != InputMethodType::ENGLISH) {
+        mgr.updateInputMethod(currentInputMethod_);
     }
 
     mgr.updateChineseMode(chineseMode_);
@@ -527,6 +632,8 @@ bool TsfMonitor::getCompositionString(ITfContext* pic, std::wstring& result) {
     result.clear();
     if (!pic) return false;
 
+    if (ecReadOnly_ == 0) return false;
+
     ITfProperty* prop = nullptr;
     HRESULT hr = pic->GetProperty(GUID_PROP_COMPOSING, &prop);
     if (FAILED(hr) || !prop) {
@@ -567,14 +674,8 @@ bool TsfMonitor::getCompositionString(ITfContext* pic, std::wstring& result) {
 bool TsfMonitor::getCandidateList(ITfContext* pic, std::vector<std::wstring>& candidates, int& selectedIndex) {
     candidates.clear();
     selectedIndex = 0;
-
     if (!pic) return false;
-
-    if (getCandidateListFromProperty(pic, candidates, selectedIndex)) {
-        return true;
-    }
-
-    return false;
+    return getCandidateListFromProperty(pic, candidates, selectedIndex);
 }
 
 bool TsfMonitor::getCandidateListFromProperty(ITfContext* pic, std::vector<std::wstring>& candidates, int& selectedIndex) {
@@ -583,45 +684,21 @@ bool TsfMonitor::getCandidateListFromProperty(ITfContext* pic, std::vector<std::
 
     if (!pic) return false;
 
-    DEBUG_LOG_SIMPLE(L"[ChineseIME] getCandidateListFromProperty: trying GUID_PROP_CANDIDATE\n");
+    DEBUG_LOG_SIMPLE(L"[ChineseIME] getCandidateListFromProperty: trying\n");
 
-    ITfProperty* prop = nullptr;
-    HRESULT hr = pic->GetProperty(GUID_PROP_CANDIDATE, &prop);
-    if (FAILED(hr) || !prop) {
-        DEBUG_LOG_SIMPLE(L"[ChineseIME] getCandidateListFromProperty: no GUID_PROP_CANDIDATE property\n");
+    bool success = false;
+    TsfEditSession* session = new TsfEditSession(pic, &candidates, &success);
+    HRESULT hrSession = S_OK;
+    HRESULT hr = pic->RequestEditSession(TF_CLIENTID_NULL, session, TF_ES_SYNC | TF_ES_READ, &hrSession);
+    session->Release();
+
+    if (FAILED(hr) || !success) {
+        DEBUG_LOG_SIMPLE(L"[ChineseIME] getCandidateListFromProperty: failed\n");
         return false;
     }
 
-    IEnumTfRanges* enumRanges = nullptr;
-    hr = prop->EnumRanges(ecReadOnly_, &enumRanges, nullptr);
-    prop->Release();
-    if (FAILED(hr) || !enumRanges) {
-        DEBUG_LOG_SIMPLE(L"[ChineseIME] getCandidateListFromProperty: cannot enum ranges\n");
-        return false;
-    }
-
-    ITfRange* range = nullptr;
-    while (enumRanges->Next(1, &range, nullptr) == S_OK) {
-        if (range) {
-            wchar_t buffer[256];
-            ULONG fetched = 0;
-            hr = range->GetText(ecReadOnly_, 0, buffer, 255, &fetched);
-            if (SUCCEEDED(hr) && fetched > 0) {
-                buffer[fetched] = 0;
-                candidates.push_back(buffer);
-            }
-            range->Release();
-        }
-    }
-    enumRanges->Release();
-
-    if (!candidates.empty()) {
-        DEBUG_LOG(L"[ChineseIME] getCandidateListFromProperty: got %d candidates\n", (int)candidates.size());
-        return true;
-    }
-
-    DEBUG_LOG_SIMPLE(L"[ChineseIME] getCandidateListFromProperty: no candidates from property\n");
-    return false;
+    DEBUG_LOG(L"[ChineseIME] getCandidateListFromProperty: got %d candidates\n", (int)candidates.size());
+    return true;
 }
 
 void TsfMonitor::updateInputMethodType(LANGID langid, REFCLSID clsid, REFGUID guidProfile) {
@@ -663,23 +740,61 @@ void TsfMonitor::updateInputMethodType(LANGID langid, REFCLSID clsid, REFGUID gu
 }
 
 void TsfMonitor::queryCurrentInputMethod() {
-    ITfInputProcessorProfiles* profiles = nullptr;
-    HRESULT hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr,
-        CLSCTX_INPROC_SERVER, IID_ITfInputProcessorProfiles, (void**)&profiles);
-    if (FAILED(hr)) return;
-
-    LANGID langid;
-    CLSID clsid;
-    GUID guidProfile;
-    hr = profiles->GetActiveLanguageProfile(clsid, &langid, &guidProfile);
-    if (SUCCEEDED(hr)) {
-        updateInputMethodType(langid, clsid, guidProfile);
-        char buf[256];
-        sprintf_s(buf, "[ChineseIME] queryCurrentInputMethod: langid=0x%04x, type=%d\n",
-            langid, (int)currentInputMethod_);
-        OutputDebugStringA(buf);
+    WCHAR klName[16] = {0};
+    if (!GetKeyboardLayoutNameW(klName) || !klName[0]) {
+        return;
     }
-    profiles->Release();
+
+    bool typeFromTsf = false;
+
+    {
+        HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        bool comInitialized = SUCCEEDED(hr);
+
+        ITfInputProcessorProfiles* profiles = nullptr;
+        hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr,
+            CLSCTX_INPROC_SERVER, IID_ITfInputProcessorProfiles, (void**)&profiles);
+        if (SUCCEEDED(hr)) {
+            CLSID clsid = CLSID_NULL;
+            LANGID langid = 0;
+            GUID guidProfile = GUID_NULL;
+            hr = profiles->GetActiveLanguageProfile(clsid, &langid, &guidProfile);
+            profiles->Release();
+
+            if (SUCCEEDED(hr) && currentInputMethod_ != InputMethodType::ENGLISH) {
+                InputMethodType oldType = currentInputMethod_;
+                updateInputMethodType(langid, clsid, guidProfile);
+                if (currentInputMethod_ != InputMethodType::UNKNOWN && currentInputMethod_ != InputMethodType::ENGLISH) {
+                    typeFromTsf = true;
+                }
+            }
+        }
+
+        if (comInitialized) CoUninitialize();
+    }
+
+    if (!typeFromTsf && currentInputMethod_ != InputMethodType::ENGLISH) {
+        DWORD_PTR hklValue = reinterpret_cast<DWORD_PTR>(GetKeyboardLayout(0));
+        WORD imeId = HIWORD(hklValue);
+        LANGID langId = LOWORD(hklValue);
+        InputMethodType hklType = detectInputMethodTypeFromImeId(imeId, langId);
+
+        WCHAR layoutLow = klName[7];
+        WCHAR layoutHigh = klName[6];
+        if (layoutLow >= L'0' && layoutLow <= L'9') {
+            WORD extractedId = static_cast<WORD>((layoutHigh - L'0') * 16 + (layoutLow - L'0'));
+            hklType = detectInputMethodTypeFromImeId(extractedId, langId);
+        } else if (layoutLow >= L'A' && layoutLow <= L'F') {
+            WORD lowNibble = static_cast<WORD>(layoutLow - L'A' + 10);
+            WORD highNibble = static_cast<WORD>(layoutHigh - L'A' + 10);
+            WORD extractedId = static_cast<WORD>(lowNibble + (highNibble << 4));
+            hklType = detectInputMethodTypeFromImeId(extractedId, langId);
+        }
+
+        if (hklType != InputMethodType::UNKNOWN && hklType != InputMethodType::ENGLISH) {
+            currentInputMethod_ = hklType;
+        }
+    }
 }
 
 } // namespace chineseime

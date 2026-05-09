@@ -34,6 +34,7 @@ public:
     bool initialize(IUnknown* pThreadMgr);
     void shutdown();
     void refreshState();
+    void pollUpdate();
 
     bool isChineseMode() const { return chineseMode_; }
     InputMethodType getInputMethodType() const { return currentInputMethod_; }

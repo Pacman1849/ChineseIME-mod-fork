@@ -67,26 +67,25 @@ chineseime::InputMethodType DetectInputMethodTypeFromHkl(HKL hkl) {
     DWORD_PTR hklValue = reinterpret_cast<DWORD_PTR>(hkl);
     WORD imeId = HIWORD(hklValue);
     chineseime::InputMethodType type = chineseime::detectInputMethodTypeFromImeId(imeId, langId);
-    if (type == chineseime::InputMethodType::OTHER_CHINESE && IsChineseLangId(langId)) {
-        WCHAR klName[16] = {0};
-        if (GetKeyboardLayoutNameW(klName)) {
-            WCHAR layoutLow = klName[0] ? klName[7] : 0;
-            WCHAR layoutHigh = klName[0] ? klName[6] : 0;
-            switch (layoutLow) {
-            case '0': case '1': case '2': case '3': case '4':
-            case '5': case '6': case '7': case '8': case '9':
-                type = chineseime::detectInputMethodTypeFromImeId(
-                    static_cast<WORD>(layoutLow - L'0' + ((layoutHigh - L'0') << 4)), langId);
-                break;
-            case 'A': case 'B': case 'C': case 'D': case 'E': case 'F':
-            case 'a': case 'b': case 'c': case 'd': case 'e': case 'f': {
-                WORD lowNibble = (layoutLow >= L'a') ? (WORD)(layoutLow - L'a' + 10) : (WORD)(layoutLow - L'A' + 10);
-                WORD highNibble = (layoutHigh >= L'a') ? (WORD)(layoutHigh - L'a' + 10) : (WORD)(layoutHigh - L'A' + 10);
-                type = chineseime::detectInputMethodTypeFromImeId(
-                    static_cast<WORD>(lowNibble + (highNibble << 4)), langId);
-                break;
-            }
-            }
+
+    WCHAR klName[16] = {0};
+    if (GetKeyboardLayoutNameW(klName) && klName[0] && type == chineseime::InputMethodType::OTHER_CHINESE && IsChineseLangId(langId)) {
+        WCHAR layoutLow = klName[7];
+        WCHAR layoutHigh = klName[6];
+        switch (layoutLow) {
+        case '0': case '1': case '2': case '3': case '4':
+        case '5': case '6': case '7': case '8': case '9':
+            type = chineseime::detectInputMethodTypeFromImeId(
+                static_cast<WORD>(layoutLow - L'0' + ((layoutHigh - L'0') << 4)), langId);
+            break;
+        case 'A': case 'B': case 'C': case 'D': case 'E': case 'F':
+        case 'a': case 'b': case 'c': case 'd': case 'e': case 'f': {
+            WORD lowNibble = (layoutLow >= L'a') ? (WORD)(layoutLow - L'a' + 10) : (WORD)(layoutLow - L'A' + 10);
+            WORD highNibble = (layoutHigh >= L'a') ? (WORD)(layoutHigh - L'a' + 10) : (WORD)(layoutHigh - L'A' + 10);
+            type = chineseime::detectInputMethodTypeFromImeId(
+                static_cast<WORD>(lowNibble + (highNibble << 4)), langId);
+            break;
+        }
         }
     }
     return type;
@@ -175,13 +174,14 @@ void PollIMEState() {
         detectedType = DetectInputMethodTypeFromHkl(hkl);
     }
 
+    auto cachedType = mgr.getSnapshot().inputMethodType;
+    bool tsfHasSetType = (cachedType != chineseime::InputMethodType::UNKNOWN &&
+                          cachedType != chineseime::InputMethodType::ENGLISH);
+
     if (attached) {
         AttachThreadInput(pollThreadId, fgThreadId, FALSE);
     }
 
-    auto cachedType = mgr.getSnapshot().inputMethodType;
-    bool tsfHasSetType = (cachedType != chineseime::InputMethodType::UNKNOWN &&
-                          cachedType != chineseime::InputMethodType::ENGLISH);
     if (!imeOpen) {
         if (!tsfHasSetType) {
             mgr.updateInputMethod(chineseime::InputMethodType::ENGLISH);
@@ -197,8 +197,6 @@ void PollIMEState() {
             if (detectedType != chineseime::InputMethodType::UNKNOWN &&
                 detectedType != chineseime::InputMethodType::ENGLISH) {
                 mgr.updateInputMethod(detectedType);
-            } else {
-                mgr.updateInputMethod(chineseime::InputMethodType::PINYIN);
             }
         }
     }
@@ -342,6 +340,9 @@ __declspec(dllexport) int StartTsfListen(void) {
         DEBUG_LOG_SIMPLE("[ChineseIME] Polling thread started\n");
         PollKeyboardState();
         PollIMEState();
+        if (g_tsfMonitor) {
+            g_tsfMonitor->pollUpdate();
+        }
         {
             auto initialState = chineseime::ImeStateManager::get().getSnapshot();
             char buf[256];
@@ -353,6 +354,9 @@ __declspec(dllexport) int StartTsfListen(void) {
         while (g_pollingRunning.load()) {
             PollKeyboardState();
             PollIMEState();
+            if (g_tsfMonitor) {
+                g_tsfMonitor->pollUpdate();
+            }
             Sleep(16);
         }
         DEBUG_LOG_SIMPLE("[ChineseIME] Polling thread stopped\n");
