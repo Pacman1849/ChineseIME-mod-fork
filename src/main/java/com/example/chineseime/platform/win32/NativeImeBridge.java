@@ -300,6 +300,14 @@ public class NativeImeBridge {
         return getInputMethodTypeAsEnum(getInputMethodType());
     }
 
+    public static String getKeyboardLayoutName() {
+        if (!isAvailable()) return "";
+        int bufChars = 32;
+        Memory buffer = new Memory(bufChars * 2L);
+        int len = INSTANCE.GetCurrentKeyboardLayoutName(buffer, bufChars * 2);
+        return len <= 0 ? "" : buffer.getWideString(0);
+    }
+
     public static InputMode getInputMethodTypeAsEnum(int type) {
         return switch (type) {
             case IME_TYPE_ENGLISH -> InputMode.LATIN;
@@ -371,6 +379,7 @@ public class NativeImeBridge {
         void RefreshImeState();
         void FreeBuffer(Pointer ptr);
         long GetKeyboardLayoutHKL();
+        int GetCurrentKeyboardLayoutName(Pointer buffer, int bufferSize);
         void SetCallbacks(CandidateUpdateCallback candidateUpdate,
                           LayoutChangeCallback layoutChange,
                           ModeChangeCallback modeChange,
