@@ -19,7 +19,65 @@ InputMethodType detectInputMethodTypeFromImeId(WORD imeId, LANGID langId) {
     case 0x0003: case 0xE001: return InputMethodType::ZHUYIN;
     case 0x0004: case 0xE002: return InputMethodType::CANGJIE;
     case 0x0005: case 0xE003: return InputMethodType::SUCHENG;
-    default: return InputMethodType::OTHER_CHINESE;
+    case 0x0011: return InputMethodType::PINYIN;
+    case 0x0012: return InputMethodType::WUBI;
+    case 0x0013: return InputMethodType::ZHUYIN;
+    case 0x0014: return InputMethodType::CANGJIE;
+    case 0x0015: return InputMethodType::SUCHENG;
+    default: {
+        // Try to detect by IME ID ranges
+        // 0x08xx range for zh-CN (Simplified Chinese) IMEs
+        if (langId == 0x0804) {
+            BYTE highByte = (imeId >> 8) & 0xFF;
+            BYTE lowByte = imeId & 0xFF;
+            // 0x08 = Simplified Chinese range
+            // 0x10 = Microsoft Pinyin variants
+            // 0x20 = Wubi variants
+            // 0x21 = Wubi 86
+            // 0x23 = Wubi 98
+            // 0x24-0x2F = various IMEs
+            if (highByte == 0x08 || highByte == 0x09) {
+                // For 0x08xx range, check the low byte to determine IME type
+                switch (lowByte) {
+                case 0x00: case 0x01: case 0x02: case 0x03:
+                case 0x04: case 0x05: case 0x06: case 0x07:
+                case 0x08: case 0x09: case 0x0A: case 0x0B:
+                case 0x0C: case 0x0D: case 0x0E: case 0x0F:
+                    return InputMethodType::PINYIN;  // Most common zh-CN IMEs default to PINYIN
+                case 0x10: case 0x11: case 0x12: case 0x13:
+                case 0x14: case 0x15: case 0x16: case 0x17:
+                case 0x18: case 0x19: case 0x1A: case 0x1B:
+                case 0x1C: case 0x1D: case 0x1E: case 0x1F:
+                    return InputMethodType::PINYIN;
+                case 0x20: case 0x21: case 0x22: case 0x23:
+                case 0x24: case 0x25: case 0x26: case 0x27:
+                case 0x28: case 0x29: case 0x2A: case 0x2B:
+                case 0x2C: case 0x2D: case 0x2E: case 0x2F:
+                    return InputMethodType::WUBI;
+                default:
+                    // For any other 0x08xx IME, assume PINYIN for zh-CN
+                    return InputMethodType::PINYIN;
+                }
+            }
+        }
+        // 0x09xx range for zh-TW (Traditional Chinese) IMEs
+        if (langId == 0x0404 || langId == 0x0C04 || langId == 0x1404) {
+            BYTE highByte = (imeId >> 8) & 0xFF;
+            if (highByte == 0x09 || highByte == 0x08) {
+                // For zh-TW, most IMEs are CANGJIE or ZHUYIN
+                BYTE lowByte = imeId & 0xFF;
+                if (lowByte >= 0x00 && lowByte <= 0x0F) {
+                    return InputMethodType::CANGJIE;
+                }
+                // ZHUYIN is 0x03 range in some systems
+                if (lowByte >= 0x20 && lowByte <= 0x2F) {
+                    return InputMethodType::ZHUYIN;
+                }
+                return InputMethodType::CANGJIE;
+            }
+        }
+        return InputMethodType::OTHER_CHINESE;
+    }
     }
 }
 

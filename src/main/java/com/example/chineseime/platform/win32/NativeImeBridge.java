@@ -73,6 +73,17 @@ public class NativeImeBridge {
     }
 
     private static Path cachedDllPath = null;
+    private static volatile boolean versionChecked = false;
+    private static final String EXPECTED_DLL_VERSION = "2.5.0";
+
+    public static String getDllVersion() {
+        if (!isAvailable()) return "not_loaded";
+        try {
+            return INSTANCE.GetDllVersion();
+        } catch (Throwable e) {
+            return "error: " + e.getMessage();
+        }
+    }
 
     public static synchronized NativeLibrary getInstance() {
         if (!loadAttempted) {
@@ -82,40 +93,67 @@ public class NativeImeBridge {
         return INSTANCE;
     }
 
-private static void loadNative() {
-    ChineseIMEInitializer.LOGGER.info("[ChineseIME] Loading native library...");
-    try {
-        String osArch = System.getProperty("os.arch");
-        String nativesPath = "/META-INF/natives/" + osArch + "/chineseime_native.dll";
-        ChineseIMEInitializer.LOGGER.info("[ChineseIME] Looking for DLL at: {}", nativesPath);
+    private static void loadNative() {
+        ChineseIMEInitializer.LOGGER.info("[ChineseIME] Loading native library...");
+        try {
+            String osArch = System.getProperty("os.arch");
+            String nativesPath = "/META-INF/natives/" + osArch + "/chineseime_native.dll";
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] Looking for DLL at: {}", nativesPath);
 
-        if (cachedDllPath == null) {
+            // Step 1: Try loading cached DLL with version check
+            if (cachedDllPath != null && cachedDllPath.toFile().exists()) {
+                try {
+                    INSTANCE = Native.load(cachedDllPath.toString(), NativeLibrary.class, W32APIOptions.UNICODE_OPTIONS);
+                    loaded = true;
+                    String version = INSTANCE.GetDllVersion();
+                    ChineseIMEInitializer.LOGGER.info("[ChineseIME] Cached DLL version: {}", version);
+                    if (version.equals(EXPECTED_DLL_VERSION)) {
+                        ChineseIMEInitializer.LOGGER.info("[ChineseIME] Using cached DLL (version OK)");
+                        return;
+                    } else {
+                        ChineseIMEInitializer.LOGGER.warn("[ChineseIME] Cached DLL version {} != expected {}, deleting and re-extracting",
+                            version, EXPECTED_DLL_VERSION);
+                        cachedDllPath.toFile().delete();
+                        cachedDllPath = null;
+                        INSTANCE = null;
+                        loaded = false;
+                    }
+                } catch (Throwable e) {
+                    ChineseIMEInitializer.LOGGER.warn("[ChineseIME] Cached DLL load failed: {}, deleting and re-extracting", e.getMessage());
+                    if (cachedDllPath.toFile().exists()) {
+                        cachedDllPath.toFile().delete();
+                    }
+                    cachedDllPath = null;
+                    INSTANCE = null;
+                    loaded = false;
+                }
+            }
+
+            // Step 2: Extract fresh DLL from JAR
             InputStream dllStream = NativeImeBridge.class.getResourceAsStream(nativesPath);
-            ChineseIMEInitializer.LOGGER.info("[ChineseIME] DLL stream: {}", dllStream != null ? "found" : "null");
-            if (dllStream != null) {
-                Path tempDir = Files.createTempDirectory("chineseime_native");
-                cachedDllPath = tempDir.resolve("chineseime_native.dll");
-                Files.copy(dllStream, cachedDllPath, StandardCopyOption.REPLACE_EXISTING);
-                dllStream.close();
-                ChineseIMEInitializer.LOGGER.info("[ChineseIME] DLL extracted to: {}", cachedDllPath);
-            } else {
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] DLL stream from JAR: {}", dllStream != null ? "found" : "null");
+            if (dllStream == null) {
                 ChineseIMEInitializer.LOGGER.warn("[ChineseIME] DLL not found in JAR at {}, using fallback", nativesPath);
                 loaded = false;
                 return;
             }
-        } else {
-            ChineseIMEInitializer.LOGGER.info("[ChineseIME] Using cached DLL: {}", cachedDllPath);
-        }
 
-        INSTANCE = Native.load(cachedDllPath.toString(), NativeLibrary.class, W32APIOptions.UNICODE_OPTIONS);
-        loaded = true;
-        ChineseIMEInitializer.LOGGER.info("[ChineseIME] DLL loaded successfully");
-    } catch (Exception e) {
-        ChineseIMEInitializer.LOGGER.warn("[ChineseIME] DLL load failed: {} - using fallback", e.getMessage());
-        e.printStackTrace();
-        loaded = false;
+            Path tempDir = Files.createTempDirectory("chineseime_native");
+            cachedDllPath = tempDir.resolve("chineseime_native.dll");
+            Files.copy(dllStream, cachedDllPath, StandardCopyOption.REPLACE_EXISTING);
+            dllStream.close();
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] DLL extracted to: {}", cachedDllPath);
+
+            INSTANCE = Native.load(cachedDllPath.toString(), NativeLibrary.class, W32APIOptions.UNICODE_OPTIONS);
+            String version = INSTANCE.GetDllVersion();
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] DLL loaded, version: {} (expected: {})", version, EXPECTED_DLL_VERSION);
+            loaded = true;
+        } catch (Exception e) {
+            ChineseIMEInitializer.LOGGER.warn("[ChineseIME] DLL load failed: {} - using fallback", e.getMessage());
+            e.printStackTrace();
+            loaded = false;
+        }
     }
-}
 
     public static boolean startListening(long hwnd) {
         if (!isAvailable()) return false;

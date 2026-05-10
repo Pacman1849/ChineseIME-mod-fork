@@ -56,7 +56,7 @@ std::thread g_pollingThread;
 std::atomic<bool> g_pollingRunning{false};
 HWND g_targetWindow = nullptr;
 
-const char* VERSION = "2.2.0";
+const char* VERSION = "2.5.0";
 
 bool IsChineseLangId(LANGID langId) {
     return langId == 0x0804 || langId == 0x0404 || langId == 0x0C04 || langId == 0x1404;
@@ -68,24 +68,73 @@ chineseime::InputMethodType DetectInputMethodTypeFromHkl(HKL hkl) {
     WORD imeId = HIWORD(hklValue);
     chineseime::InputMethodType type = chineseime::detectInputMethodTypeFromImeId(imeId, langId);
 
+    // For TSF IMEs, imeId equals langId, which means it's not a real IME ID
+    // We need to extract the actual IME ID from klName
+    bool isValidImeId = (imeId != 0 && imeId != langId);
+
     WCHAR klName[16] = {0};
-    if (GetKeyboardLayoutNameW(klName) && klName[0] && type == chineseime::InputMethodType::OTHER_CHINESE && IsChineseLangId(langId)) {
+    if (GetKeyboardLayoutNameW(klName) && klName[0] && (!isValidImeId || type == chineseime::InputMethodType::OTHER_CHINESE || type == chineseime::InputMethodType::UNKNOWN) && IsChineseLangId(langId)) {
+        // Extract IME ID from positions 4-7
         WCHAR layoutLow = klName[7];
         WCHAR layoutHigh = klName[6];
+        WORD extractedId = 0;
+
         switch (layoutLow) {
         case '0': case '1': case '2': case '3': case '4':
         case '5': case '6': case '7': case '8': case '9':
-            type = chineseime::detectInputMethodTypeFromImeId(
-                static_cast<WORD>(layoutLow - L'0' + ((layoutHigh - L'0') << 4)), langId);
+            extractedId = static_cast<WORD>(layoutLow - L'0' + ((layoutHigh - L'0') << 4));
             break;
         case 'A': case 'B': case 'C': case 'D': case 'E': case 'F':
         case 'a': case 'b': case 'c': case 'd': case 'e': case 'f': {
             WORD lowNibble = (layoutLow >= L'a') ? (WORD)(layoutLow - L'a' + 10) : (WORD)(layoutLow - L'A' + 10);
             WORD highNibble = (layoutHigh >= L'a') ? (WORD)(layoutHigh - L'a' + 10) : (WORD)(layoutHigh - L'A' + 10);
-            type = chineseime::detectInputMethodTypeFromImeId(
-                static_cast<WORD>(lowNibble + (highNibble << 4)), langId);
+            extractedId = static_cast<WORD>(lowNibble + (highNibble << 4));
             break;
         }
+        }
+
+        // Reject pure language IDs
+        bool isLanguageIdOnly = (extractedId == 0x0804 || extractedId == 0x0404 ||
+                                 extractedId == 0x0C04 || extractedId == 0x1404 ||
+                                 extractedId == 0x1004 || extractedId == 0);
+
+        if (!isLanguageIdOnly) {
+            type = chineseime::detectInputMethodTypeFromImeId(extractedId, langId);
+        } else {
+            // Try first 4 chars for TSF IMEs with longer layout names
+            WCHAR fullLow = klName[3];
+            WCHAR fullHigh = klName[2];
+            WORD fullExtractedId = 0;
+
+            switch (fullLow) {
+            case '0': case '1': case '2': case '3': case '4':
+            case '5': case '6': case '7': case '8': case '9':
+                fullExtractedId = static_cast<WORD>(fullLow - L'0' + ((fullHigh - L'0') << 4));
+                break;
+            case 'A': case 'B': case 'C': case 'D': case 'E': case 'F':
+            case 'a': case 'b': case 'c': case 'd': case 'e': case 'f': {
+                WORD lowNibble = (fullLow >= L'a') ? (WORD)(fullLow - L'a' + 10) : (WORD)(fullLow - L'A' + 10);
+                WORD highNibble = (fullHigh >= L'a') ? (WORD)(fullHigh - L'a' + 10) : (WORD)(fullHigh - L'A' + 10);
+                fullExtractedId = static_cast<WORD>(lowNibble + (highNibble << 4));
+                break;
+            }
+            }
+
+            bool isValidFullId = (fullExtractedId != 0 &&
+                fullExtractedId != 0x0804 && fullExtractedId != 0x0404 &&
+                fullExtractedId != 0x0C04 && fullExtractedId != 0x1404 &&
+                fullExtractedId != 0x1004);
+
+            if (isValidFullId) {
+                type = chineseime::detectInputMethodTypeFromImeId(fullExtractedId, langId);
+            } else {
+                // Use language default
+                if (langId == 0x0804) {
+                    type = chineseime::InputMethodType::PINYIN;
+                } else if (langId == 0x0404 || langId == 0x0C04 || langId == 0x1404 || langId == 0x1004) {
+                    type = chineseime::InputMethodType::CANGJIE;
+                }
+            }
         }
     }
     return type;
@@ -177,33 +226,169 @@ void PollIMEState() {
     GetKeyboardLayoutNameW(klName);
     chineseime::InputMethodType detectedType = chineseime::InputMethodType::UNKNOWN;
     WORD imeId = 0;
+
+    if (verbose) {
+        char dbgHkl[256];
+        sprintf_s(dbgHkl, "[ChineseIME] PollIME: hkl=0x%IX, klName=%S\n", (DWORD64)hkl, klName);
+        OutputDebugStringA(dbgHkl);
+    }
+
     if (hkl) {
-        detectedType = DetectInputMethodTypeFromHkl(hkl);
         DWORD_PTR hklValue = reinterpret_cast<DWORD_PTR>(hkl);
         imeId = HIWORD(hklValue);
-        
-        // For TSF IMEs, imeId is often 0. Try to extract from layout name
-        if (imeId == 0 && klName[0]) {
-            WCHAR layoutLow = klName[7];
-            WCHAR layoutHigh = klName[6];
-            WORD extractedId = 0;
-            if (layoutLow >= L'0' && layoutLow <= L'9' && layoutHigh >= L'0' && layoutHigh <= L'9') {
-                extractedId = static_cast<WORD>((layoutHigh - L'0') * 16 + (layoutLow - L'0'));
-            } else if (layoutLow >= L'A' && layoutLow <= L'F') {
-                WORD lowNibble = static_cast<WORD>(layoutLow - L'A' + 10);
-                WORD highNibble = static_cast<WORD>(layoutHigh - L'A' + 10);
-                extractedId = static_cast<WORD>(lowNibble + (highNibble << 4));
+        LANGID langId = LOWORD(hklValue);
+
+        // For TSF IMEs, HIWORD(hkl) often returns just the language ID (e.g., 0x0804 for zh-CN),
+        // not a real IME ID. Check if imeId == langId to detect this case.
+        // A valid IME ID should NOT equal the language ID.
+        bool isValidImeId = (imeId != 0 && imeId != langId);
+
+        if (verbose) {
+            char dbgHkl[256];
+            sprintf_s(dbgHkl, "[ChineseIME] PollIME: hkl=0x%IX, imeId=0x%X, langId=0x%X, isValidImeId=%d, klName=%S\n",
+                (DWORD64)hkl, imeId, langId, isValidImeId ? 1 : 0, klName);
+            OutputDebugStringA(dbgHkl);
+        }
+
+        // Try direct IME ID from HKL first (for legacy IMM32 IMEs that have real IME IDs)
+        if (isValidImeId) {
+            detectedType = chineseime::detectInputMethodTypeFromImeId(imeId, langId);
+            if (verbose) {
+                char dbg[256];
+                sprintf_s(dbg, "[ChineseIME] PollIME: valid IME ID 0x%X from HKL -> type=%d\n", imeId, (int)detectedType);
+                OutputDebugStringA(dbg);
             }
-            if (extractedId > 0) {
-                LANGID langId = LOWORD(hklValue);
+        }
+
+        // For TSF IMEs, HKL returns just the language ID (e.g., 0x00000804 for zh-CN)
+        // In this case, imeId == langId, so we need to extract the real IME ID from klName[4:7].
+        if ((imeId == 0 || !isValidImeId) && IsChineseLangId(langId) && klName[0]) {
+            {
+                char dbgTsf[256];
+                sprintf_s(dbgTsf, "[ChineseIME] DEBUG: Entering TSF block, imeId=0x%X, langId=0x%X, isValidImeId=%d, klName=%S\n",
+                    imeId, langId, isValidImeId ? 1 : 0, klName);
+                OutputDebugStringA(dbgTsf);
+            }
+            // Try extracting IME ID from positions 4-7 (standard 8-char format)
+            WCHAR imeIdStr[5] = {klName[4], klName[5], klName[6], klName[7], 0};
+            WORD extractedId = 0;
+            swscanf_s(imeIdStr, L"%4hx", &extractedId);
+
+            // Reject pure language IDs - if extracted ID equals the current language ID,
+            // it's not a real IME ID, just the language identifier
+            bool isLanguageIdOnly = (extractedId == 0x0804 || extractedId == 0x0404 ||
+                                     extractedId == 0x0C04 || extractedId == 0x1404 ||
+                                     extractedId == 0x1004 || extractedId == 0);
+
+            if (!isLanguageIdOnly) {
                 detectedType = chineseime::detectInputMethodTypeFromImeId(extractedId, langId);
+                if (verbose) {
+                    char dbgTsf[256];
+                    sprintf_s(dbgTsf, "[ChineseIME] PollIME: TSF IME (HKL=0, klName=%S), extracted IME ID 0x%X -> type=%d\n",
+                        klName, extractedId, (int)detectedType);
+                    OutputDebugStringA(dbgTsf);
+                }
+            } else {
+                // Pure language ID layout - try longer layout names for TSF IMEs
+                // TSF IME layout names can be longer than 8 chars (e.g., "E0030804")
+                // The IME ID is in the first 4 chars (e.g., "E003")
+                WCHAR fullImeIdStr[5] = {klName[0], klName[1], klName[2], klName[3], 0};
+                WORD fullExtractedId = 0;
+                swscanf_s(fullImeIdStr, L"%4hx", &fullExtractedId);
+
+                if (verbose) {
+                    char dbgTsf[256];
+                    sprintf_s(dbgTsf, "[ChineseIME] PollIME: TSF IME, full klName=%S, first4=%S (0x%X), last4=%S (0x%X)\n",
+                        klName, fullImeIdStr, fullExtractedId, imeIdStr, extractedId);
+                    OutputDebugStringA(dbgTsf);
+                }
+
+                // If the first 4 chars give a valid (non-zero, non-language-id) IME ID, use it
+                bool isValidFullId = (fullExtractedId != 0 &&
+                    fullExtractedId != 0x0804 && fullExtractedId != 0x0404 &&
+                    fullExtractedId != 0x0C04 && fullExtractedId != 0x1404 &&
+                    fullExtractedId != 0x1004);
+
+                if (isValidFullId) {
+                    detectedType = chineseime::detectInputMethodTypeFromImeId(fullExtractedId, langId);
+                    if (verbose) {
+                        char dbgTsf[256];
+                        sprintf_s(dbgTsf, "[ChineseIME] PollIME: TSF IME, full IME ID 0x%X from first4 -> type=%d\n",
+                            fullExtractedId, (int)detectedType);
+                        OutputDebugStringA(dbgTsf);
+                    }
+                } else {
+                    // Pure language ID layout - default based on language
+                    // For zh-TW (0x0404, 0x0C04, 0x1404), the default is CANGJIE/速成
+                    // For zh-CN (0x0804), the default is PINYIN
+                    {
+                        char dbgTsf[256];
+                        sprintf_s(dbgTsf, "[ChineseIME] DEBUG2: TSF pure lang, langId=0x%X, setting default\n", langId);
+                        OutputDebugStringA(dbgTsf);
+                    }
+                    if (langId == 0x0804) {
+                        detectedType = chineseime::InputMethodType::PINYIN;
+                        {
+                            char dbgTsf[256];
+                            sprintf_s(dbgTsf, "[ChineseIME] DEBUG2: TSF set to PINYIN (zh-CN)\n");
+                            OutputDebugStringA(dbgTsf);
+                        }
+                    } else if (langId == 0x0404 || langId == 0x0C04 || langId == 0x1404 || langId == 0x1004) {
+                        // For zh-TW, default to CANGJIE (most common), but we should check
+                        // if it's 速成 by trying other detection methods
+                        detectedType = chineseime::InputMethodType::CANGJIE;
+                        {
+                            char dbgTsf[256];
+                            sprintf_s(dbgTsf, "[ChineseIME] DEBUG2: TSF set to CANGJIE (zh-TW)\n");
+                            OutputDebugStringA(dbgTsf);
+                        }
+                    } else {
+                        detectedType = chineseime::InputMethodType::UNKNOWN;
+                    }
+                    if (verbose) {
+                        char dbgTsf[256];
+                        sprintf_s(dbgTsf, "[ChineseIME] PollIME: TSF IME (HKL=0, klName=%S), pure lang ID, default type=%d\n",
+                            klName, (int)detectedType);
+                        OutputDebugStringA(dbgTsf);
+                    }
+                }
+            }
+        } else if ((imeId == 0 || !isValidImeId) && IsChineseLangId(langId)) {
+            // No klName available, use language default
+            if (langId == 0x0804) {
+                detectedType = chineseime::InputMethodType::PINYIN;
+            } else {
+                detectedType = chineseime::InputMethodType::CANGJIE;
+            }
+            if (verbose) {
+                char dbgTsf[256];
+                sprintf_s(dbgTsf, "[ChineseIME] PollIME: TSF IME (HKL=0, no klName), default type=%d\n",
+                    (int)detectedType);
+                OutputDebugStringA(dbgTsf);
+            }
+        }
+
+        // Try extracting IME ID from layout name (positions 4-7) for any remaining UNKNOWN/OTHER_CHINESE
+        if ((detectedType == chineseime::InputMethodType::OTHER_CHINESE ||
+             detectedType == chineseime::InputMethodType::UNKNOWN) && klName[0]) {
+            WCHAR imeIdStr[5] = {klName[4], klName[5], klName[6], klName[7], 0};
+            WORD extractedId = 0;
+            swscanf_s(imeIdStr, L"%4hx", &extractedId);
+            // Only accept IME IDs that are NOT pure language IDs
+            if (extractedId != 0 && extractedId != 0x0804 && extractedId != 0x0404 &&
+                extractedId != 0x0C04 && extractedId != 0x1404) {
+                detectedType = chineseime::detectInputMethodTypeFromImeId(extractedId, langId);
+                if (verbose) {
+                    char dbgExt[256];
+                    sprintf_s(dbgExt, "[ChineseIME] PollIME: extracted IME ID 0x%X from klName -> type=%d\n",
+                        extractedId, (int)detectedType);
+                    OutputDebugStringA(dbgExt);
+                }
             }
         }
     }
 
     auto cachedType = mgr.getSnapshot().inputMethodType;
-    bool tsfHasSetType = (cachedType != chineseime::InputMethodType::UNKNOWN &&
-                          cachedType != chineseime::InputMethodType::ENGLISH);
 
     if (verbose) {
         char dbg[256];
@@ -216,8 +401,7 @@ void PollIMEState() {
         AttachThreadInput(pollThreadId, fgThreadId, FALSE);
     }
 
-    // Always check for IME type changes when IME is open
-    // Only skip update if types are the same
+    // Only update type if detection is meaningful and differs from cached
     if (imeOpen) {
         if (detectedType != chineseime::InputMethodType::UNKNOWN &&
             detectedType != chineseime::InputMethodType::ENGLISH &&
@@ -228,7 +412,6 @@ void PollIMEState() {
             OutputDebugStringA(dbg);
         }
     } else {
-        // IME closed, check if we should set ENGLISH
         bool isChineseCached = (cachedType != chineseime::InputMethodType::ENGLISH &&
                                 cachedType != chineseime::InputMethodType::UNKNOWN);
         if (isChineseCached) {
@@ -260,22 +443,26 @@ void PollIMEState() {
 
     std::vector<std::wstring> candidates;
     int selectedIndex = 0;
-    size_t bufSize = ImmGetCandidateList(himc, 0, nullptr, 0);
+    // Use ImmGetCandidateListW for Unicode support
+    DWORD bufSize = ImmGetCandidateListW(himc, 0, nullptr, 0);
 
     if (bufSize > 0) {
         std::vector<char> candBuf(bufSize);
         CANDIDATELIST* candList = reinterpret_cast<CANDIDATELIST*>(candBuf.data());
-        ImmGetCandidateList(himc, 0, candList, bufSize);
-        DWORD count = candList->dwCount;
-        selectedIndex = candList->dwSelection;
-        if (count > 10) count = 10;
-        for (DWORD j = 0; j < count; j++) {
-            wchar_t* pStr = (wchar_t*)(candBuf.data() + candList->dwOffset[j]);
-            candidates.push_back(pStr);
+        DWORD result = ImmGetCandidateListW(himc, 0, candList, bufSize);
+        if (result > 0) {
+            DWORD count = candList->dwCount;
+            selectedIndex = (int)candList->dwSelection;
+            if (count > 10) count = 10;
+            for (DWORD j = 0; j < count; j++) {
+                // Offset is in bytes, so we need to cast to wchar_t* correctly
+                wchar_t* pStr = (wchar_t*)(candBuf.data() + candList->dwOffset[j]);
+                candidates.push_back(pStr);
+            }
+            char dbgBuf[256];
+            sprintf_s(dbgBuf, "[ChineseIME] PollIME: got %d candidates, sel=%d\n", (int)count, selectedIndex);
+            OutputDebugStringA(dbgBuf);
         }
-        char dbgBuf[256];
-        sprintf_s(dbgBuf, "[ChineseIME] PollIME: got %d candidates, sel=%d\n", (int)count, selectedIndex);
-        OutputDebugStringA(dbgBuf);
     }
 
     if (!composition.empty() || !candidates.empty()) {
@@ -318,13 +505,7 @@ __declspec(dllexport) int IsListening(void) {
 }
 
 __declspec(dllexport) int StartTsfListen(void) {
-    // Use a simple approach - try to create a file to verify this function is called
-    FILE* f = fopen("C:\\Users\\user\\Documents\\ChineseIME-Fabric-1.21.4\\debug_log.txt", "a");
-    if (f) {
-        fprintf(f, "StartTsfListen called\n");
-        fclose(f);
-    }
-    OutputDebugStringA("[ChineseIME] StartTsfListen: called");
+    OutputDebugStringA("[ChineseIME] StartTsfListen called\n");
     if (g_tsfInitialized.load()) {
         OutputDebugStringA("[ChineseIME] StartTsfListen: already initialized");
         return 1;
@@ -333,15 +514,9 @@ __declspec(dllexport) int StartTsfListen(void) {
     g_staThread = std::make_unique<chineseime::StaThread>();
     if (!g_staThread->start()) {
         OutputDebugStringA("[ChineseIME] StartTsfListen: StaThread start failed");
-        FILE* f2 = fopen("C:\\Users\\user\\Documents\\ChineseIME-Fabric-1.21.4\\debug_log.txt", "a");
-        if (f2) { fprintf(f2, "StaThread start failed\n"); fclose(f2); }
         return 0;
     }
     OutputDebugStringA("[ChineseIME] StartTsfListen: StaThread started");
-
-    // Log to file to verify
-    FILE* f3 = fopen("C:\\Users\\user\\Documents\\ChineseIME-Fabric-1.21.4\\debug_log.txt", "a");
-    if (f3) { fprintf(f3, "StaThread started successfully\n"); fclose(f3); }
 
     std::promise<bool> initPromise;
     std::future<bool> initFuture = initPromise.get_future();
@@ -483,7 +658,11 @@ __declspec(dllexport) int GetCompositionString(wchar_t* buffer, int bufferSize) 
 }
 
 __declspec(dllexport) int GetCandidateCount(void) {
-    return (int)chineseime::ImeStateManager::get().getSnapshot().candidates.size();
+    int count = (int)chineseime::ImeStateManager::get().getSnapshot().candidates.size();
+    char dbg[64];
+    sprintf_s(dbg, "[ChineseIME] GetCandidateCount: returning %d\n", count);
+    OutputDebugStringA(dbg);
+    return count;
 }
 
 __declspec(dllexport) int GetCandidate(int index, wchar_t* buffer, int bufferSize) {
@@ -494,7 +673,11 @@ __declspec(dllexport) int GetCandidate(int index, wchar_t* buffer, int bufferSiz
         return 0;
     }
     const std::wstring& cand = state.candidates[index];
-    int len = (int)cand.length();
+    char dbg[256];
+    int candLen = (int)cand.length();
+    sprintf_s(dbg, "[ChineseIME] GetCandidate[%d]: len=%d\n", index, candLen);
+    OutputDebugStringA(dbg);
+    int len = candLen;
     if (len >= bufferSize) len = bufferSize - 1;
     wcsncpy_s(buffer, (size_t)bufferSize, cand.c_str(), (size_t)len);
     buffer[len] = 0;
@@ -546,8 +729,13 @@ __declspec(dllexport) void SetTargetWindow(void* hwnd) {
 }
 
 __declspec(dllexport) void RefreshImeState(void) {
+    OutputDebugStringA("[ChineseIME] RefreshImeState: entry\n");
     PollKeyboardState();
     PollIMEState();
+    if (g_tsfMonitor) {
+        g_tsfMonitor->refreshState();
+        OutputDebugStringA("[ChineseIME] RefreshImeState: refreshState done\n");
+    }
 }
 
 __declspec(dllexport) void FreeBuffer(void* ptr) {
@@ -579,7 +767,29 @@ __declspec(dllexport) void SetEventCallbacks(
     g_imeChangeCallback = reinterpret_cast<ImeChangeCallback>(imeChange);
     g_keyboardCallback = reinterpret_cast<KeyboardCallback>(keyboard);
 
-    OutputDebugStringA("[ChineseIME] Event callbacks registered\n");
+    chineseime::WinEventBridge::EventCallbacks evCallbacks;
+
+    if (preedit) {
+        PreeditCallback pc = reinterpret_cast<PreeditCallback>(preedit);
+        evCallbacks.preeditCallback = [pc](const wchar_t* text, int cursorPos, int selStart, int selLen) {
+            pc(text, cursorPos, selStart, selLen);
+        };
+    }
+    if (commit) {
+        CommitCallback cc = reinterpret_cast<CommitCallback>(commit);
+        evCallbacks.commitCallback = [cc](const wchar_t* text) {
+            cc(text);
+        };
+    }
+    if (candidate) {
+        CandidateCallback candc = reinterpret_cast<CandidateCallback>(candidate);
+        evCallbacks.candidateCallback = [candc](const wchar_t** cands, int count, int selIdx) {
+            candc(cands, count, selIdx);
+        };
+    }
+
+    chineseime::WinEventBridge::get().setCallbacks(std::move(evCallbacks));
+    OutputDebugStringA("[ChineseIME] SetEventCallbacks: stored in globals AND WinEventBridge\n");
 }
 
 __declspec(dllexport) void HookWindowProc(void* hwnd) {

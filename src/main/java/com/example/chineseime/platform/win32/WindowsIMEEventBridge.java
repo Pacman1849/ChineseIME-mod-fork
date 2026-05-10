@@ -111,24 +111,42 @@ public class WindowsIMEEventBridge {
                 mode == InputMode.SUCHENG);
     }
 
+    private InputMode lastMode = null;
+    private boolean lastVerticalLayout = false;
+
     public void updateFromNativeState() {
         String composition = NativeImeBridge.getCompositionString();
         java.util.List<String> candidates = NativeImeBridge.getCandidates();
         int selectedIndex = NativeImeBridge.getSelectedCandidateIndex();
 
-        if (!composition.isEmpty() || !candidates.isEmpty()) {
-            if (isVerticalLayout()) {
-                verticalHud.updateCandidatesKeepSelection(candidates, composition, selectedIndex, 0);
+        boolean verticalLayout = isVerticalLayout();
+
+        if (verticalLayout) {
+            verticalHud.updateCandidatesKeepSelection(candidates, composition, selectedIndex, 0);
+            horizontalHud.clearInput();
+            if (verticalHud.isVisible() != !composition.isEmpty() || !candidates.isEmpty()) {
+                verticalHud.setVisible(!composition.isEmpty() || !candidates.isEmpty());
+            }
+            if (horizontalHud.isVisible()) {
                 horizontalHud.setVisible(false);
-                verticalHud.setVisible(true);
-            } else {
-                horizontalHud.updateCandidatesKeepSelection(candidates, composition, selectedIndex, 0);
-                horizontalHud.setVisible(true);
-                verticalHud.setVisible(false);
             }
         } else {
-            horizontalHud.setVisible(false);
-            verticalHud.setVisible(false);
+            horizontalHud.updateCandidatesKeepSelection(candidates, composition, selectedIndex, 0);
+            verticalHud.clearInput();
+            if (horizontalHud.isVisible() != !composition.isEmpty() || !candidates.isEmpty()) {
+                horizontalHud.setVisible(!composition.isEmpty() || !candidates.isEmpty());
+            }
+            if (verticalHud.isVisible()) {
+                verticalHud.setVisible(false);
+            }
+        }
+
+        lastVerticalLayout = verticalLayout;
+
+        InputMode currentMode = getDetectedInputMode();
+        if (currentMode != lastMode) {
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] IME type changed: {} -> {}", lastMode, currentMode);
+            lastMode = currentMode;
         }
     }
 

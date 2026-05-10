@@ -17,6 +17,104 @@ static WNDPROC g_originalWndProc = nullptr;
 static HWND g_targetWindow = nullptr;
 static bool g_callbacksRegistered = false;
 
+// WinEvent Hook for IME message capture
+static HWINEVENTHOOK g_winEventHook = nullptr;
+static HWINEVENTHOOK g_objectEventHook = nullptr;
+
+// WinEvent callback function (global scope, outside namespace)
+void CALLBACK WinEventHookCallback(HWINEVENTHOOK hook, DWORD event, HWND hwnd, LONG idObject, LONG idChild, DWORD idEventThread, DWORD dwmsEventTime) {
+    (void)hook; // unused
+    
+    if (hwnd == nullptr || idObject != OBJID_WINDOW) return;
+
+    // Only process relevant system events
+    // Note: There are no EVENT_SYSTEM_IME_* constants - IME messages are delivered via WM_IME_* window messages
+    // We hook foreground and focus changes to detect when the target window changes
+    if (event == EVENT_SYSTEM_FOREGROUND || event == EVENT_SYSTEM_SWITCHSTART || event == EVENT_SYSTEM_SWITCHEND) {
+        
+        char dbg[128];
+        sprintf_s(dbg, "[ChineseIME] WinEventHook: event=0x%X, hwnd=0x%p\n", event, (void*)hwnd);
+        OutputDebugStringA(dbg);
+
+        // Forward to WinEventBridge if it's the hooked window
+        auto& bridge = chineseime::WinEventBridge::get();
+        if (bridge.isHooked() && bridge.getTargetWindow() == hwnd) {
+            if (event == EVENT_SYSTEM_FOREGROUND) {
+                bridge.onForegroundChanged(hwnd);
+            }
+        }
+    }
+}
+
+// Object event callback for focus changes
+void CALLBACK ObjectEventHookCallback(HWINEVENTHOOK hook, DWORD event, HWND hwnd, LONG idObject, LONG idChild, DWORD idEventThread, DWORD dwmsEventTime) {
+    (void)hook; // unused
+    
+    if (hwnd == nullptr || idObject != OBJID_WINDOW) return;
+
+    // Capture focus changes to detect chat window
+    if (event == EVENT_OBJECT_FOCUS && idChild == OBJID_CLIENT) {
+        char dbg[128];
+        sprintf_s(dbg, "[ChineseIME] ObjectEventHook: FOCUS hwnd=0x%p\n", (void*)hwnd);
+        OutputDebugStringA(dbg);
+
+        // Forward to WinEventBridge
+        chineseime::WinEventBridge::get().onFocusChanged(hwnd);
+    }
+}
+
+// Start WinEvent Hook (called once with static guard)
+static void startWinEventHook() {
+    if (g_winEventHook) return;
+    
+    // Hook into all desktop processes for window focus changes
+    // EVENT_SYSTEM_FOREGROUND = 0x0005, EVENT_SYSTEM_SWITCHEND = 0x0017
+    // This covers system-level focus and window switch events
+    g_winEventHook = SetWinEventHook(
+        EVENT_SYSTEM_FOREGROUND,
+        EVENT_SYSTEM_SWITCHEND,
+        nullptr, // hook in all processes
+        WinEventHookCallback,
+        0, // all processes
+        0, // all threads
+        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+
+    // Also hook object events for focus changes (EVENT_OBJECT_FOCUS = 0x8005)
+    g_objectEventHook = SetWinEventHook(
+        EVENT_OBJECT_FOCUS,
+        EVENT_OBJECT_FOCUS,
+        nullptr, // hook in all processes
+        ObjectEventHookCallback,
+        0, // all processes
+        0, // all threads
+        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+
+    if (g_winEventHook) {
+        OutputDebugStringA("[ChineseIME] WinEventHook: started successfully\n");
+    } else {
+        OutputDebugStringA("[ChineseIME] WinEventHook: FAILED to start\n");
+    }
+    if (g_objectEventHook) {
+        OutputDebugStringA("[ChineseIME] ObjectEventHook: started successfully\n");
+    } else {
+        OutputDebugStringA("[ChineseIME] ObjectEventHook: FAILED to start\n");
+    }
+}
+
+// Stop WinEvent Hook
+static void stopWinEventHook() {
+    if (g_winEventHook) {
+        UnhookWinEvent(g_winEventHook);
+        g_winEventHook = nullptr;
+        OutputDebugStringA("[ChineseIME] WinEventHook: stopped\n");
+    }
+    if (g_objectEventHook) {
+        UnhookWinEvent(g_objectEventHook);
+        g_objectEventHook = nullptr;
+        OutputDebugStringA("[ChineseIME] ObjectEventHook: stopped\n");
+    }
+}
+
 namespace chineseime {
 
 WinEventBridge& WinEventBridge::get() {
@@ -30,6 +128,13 @@ void WinEventBridge::setCallbacks(EventCallbacks&& callbacks) {
 }
 
 void WinEventBridge::hookWindow(HWND hwnd) {
+    // Start WinEvent Hook once (static guard ensures it runs only once)
+    static bool hookInitialized = []() {
+        startWinEventHook();
+        return true;
+    }();
+    (void)hookInitialized; // suppress unused variable warning
+
     if (hooked_ && targetWindow_ == hwnd) {
         return;
     }
@@ -62,6 +167,7 @@ void WinEventBridge::unhookWindow() {
         g_targetWindow = nullptr;
         OutputDebugStringA("[ChineseIME] WinEventBridge: unhooked\n");
     }
+    stopWinEventHook();
 }
 
 void WinEventBridge::refreshCandidates() {
@@ -71,6 +177,31 @@ void WinEventBridge::refreshCandidates() {
     if (himc) {
         readCandidates(himc);
         ImmReleaseContext(targetWindow_, himc);
+    }
+}
+
+void WinEventBridge::onForegroundChanged(HWND hwnd) {
+    if (!hwnd) return;
+    char dbg[128];
+    sprintf_s(dbg, "[ChineseIME] WinEventBridge::onForegroundChanged: hwnd=0x%p\n", (void*)hwnd);
+    OutputDebugStringA(dbg);
+    
+    // If not already hooked to this window, set it as target and hook it
+    if (!hooked_ || targetWindow_ != hwnd) {
+        hookWindow(hwnd);
+    }
+}
+
+void WinEventBridge::onFocusChanged(HWND hwnd) {
+    if (!hwnd) return;
+    char dbg[128];
+    sprintf_s(dbg, "[ChineseIME] WinEventBridge::onFocusChanged: hwnd=0x%p\n", (void*)hwnd);
+    OutputDebugStringA(dbg);
+    
+    // Check if this is the Minecraft window (we could enhance this with class name detection)
+    // For now, we set it as target if we don't have one yet, or if it becomes foreground
+    if (!targetWindow_) {
+        hookWindow(hwnd);
     }
 }
 
@@ -111,6 +242,7 @@ void WinEventBridge::readCompositionCursor(HIMC himc) {
 }
 
 void WinEventBridge::readCandidates(HIMC himc) {
+    OutputDebugStringA("[ChineseIME] readCandidates: count=X\n");
     DWORD bufSize = ImmGetCandidateListW(himc, 0, nullptr, 0);
 
     char dbg[256];
@@ -252,6 +384,21 @@ void WinEventBridge::processImeNotify(WPARAM wParam, LPARAM) {
 
 LRESULT CALLBACK WinEventBridge::ImeWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     auto& bridge = WinEventBridge::get();
+
+    // Log all IME-related messages
+    if (msg >= WM_IME_STARTCOMPOSITION && msg <= WM_IME_KEYLAST) {
+        char dbg[128];
+        const char* msgName = "?";
+        if (msg == WM_IME_STARTCOMPOSITION) msgName = "STARTCOMP";
+        else if (msg == WM_IME_COMPOSITION) msgName = "COMP";
+        else if (msg == WM_IME_ENDCOMPOSITION) msgName = "ENDCOMP";
+        else if (msg == WM_IME_NOTIFY) msgName = "NOTIFY";
+        else if (msg == WM_IME_SETCONTEXT) msgName = "SETCTX";
+        else if (msg == WM_INPUTLANGCHANGE) msgName = "INPUTLANG";
+        sprintf_s(dbg, "[ChineseIME] ImeWndProc: hwnd=0x%p msg=%s(0x%04X) wp=0x%llX lp=0x%llX\n",
+            (void*)hWnd, msgName, msg, (unsigned long long)wParam, (unsigned long long)lParam);
+        OutputDebugStringA(dbg);
+    }
 
     switch (msg) {
         case WM_IME_STARTCOMPOSITION: {

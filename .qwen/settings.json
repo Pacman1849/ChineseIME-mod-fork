@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(cmake *)",
-      "Bash(./gradlew.bat *)"
+      "Bash(./gradlew.bat *)",
+      "Bash(dir *)",
+      "Bash(powershell *)",
+      "Bash(.\\gradlew.bat *)",
+      "Bash(python3 *)"
     ]
   },
   "$version": 3

@@ -13,6 +13,8 @@ import net.fabricmc.api.Environment;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
+import net.minecraft.client.gui.screen.ChatScreen;
+import net.minecraft.client.gui.widget.TextFieldWidget;
 import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,6 +37,11 @@ public class ChineseIMEInitializer implements ClientModInitializer {
     private boolean prevDownPressed = false;
     private boolean prevBracketLeftPressed = false;
     private boolean prevBracketRightPressed = false;
+    private boolean prevEnterPressed = false;
+    private boolean prevBackspacePressed = false;
+    private boolean prevNum1Pressed = false, prevNum2Pressed = false, prevNum3Pressed = false;
+    private boolean prevNum4Pressed = false, prevNum5Pressed = false, prevNum6Pressed = false;
+    private boolean prevNum7Pressed = false, prevNum8Pressed = false, prevNum9Pressed = false;
 
     @Override
     public void onInitializeClient() {
@@ -55,6 +62,10 @@ public class ChineseIMEInitializer implements ClientModInitializer {
                     this.imeManager = new PlatformIMEManager(this.config, this.candidateHud, this.verticalCandidateHud, this.statusIndicator, nativeHandle);
 
                     LOGGER.info("[ChineseIME] IME Manager initialized, syncEnabled={}", this.imeManager.isWindowsSync());
+
+                    if (this.imeManager.isWindowsSync()) {
+                        registerCallbacks();
+                    }
                 }
             }
         });
@@ -70,12 +81,31 @@ public class ChineseIMEInitializer implements ClientModInitializer {
             boolean upPressed = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_UP) == GLFW.GLFW_PRESS;
             boolean downPressed = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_DOWN) == GLFW.GLFW_PRESS;
 
-            if (this.imeManager != null && this.imeManager.hasInput()) {
+            boolean hasCandidates = false;
+            if (this.imeManager != null) {
+                CandidateHud h = this.imeManager.getHud();
+                VerticalCandidateHud v = this.imeManager.getVerticalHud();
+                hasCandidates = (h != null && h.isVisible() && !h.getCandidates().isEmpty()) ||
+                               (v != null && v.isVisible() && !v.getCandidates().isEmpty());
+            }
+
+            boolean consumeArrowKeys = hasCandidates;
+
+            if (consumeArrowKeys) {
                 if ((leftPressed && !prevLeftPressed) || (upPressed && !prevUpPressed)) {
                     this.imeManager.selectPrev();
                 } else if ((rightPressed && !prevRightPressed) || (downPressed && !prevDownPressed)) {
                     this.imeManager.selectNext();
                 }
+                boolean bracketLeftPressed = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_LEFT_BRACKET) == GLFW.GLFW_PRESS;
+                boolean bracketRightPressed = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_RIGHT_BRACKET) == GLFW.GLFW_PRESS;
+                if (bracketLeftPressed && !prevBracketLeftPressed) {
+                    this.imeManager.prevPage();
+                } else if (bracketRightPressed && !prevBracketRightPressed) {
+                    this.imeManager.nextPage();
+                }
+                prevBracketLeftPressed = bracketLeftPressed;
+                prevBracketRightPressed = bracketRightPressed;
             }
 
             prevLeftPressed = leftPressed;
@@ -97,26 +127,117 @@ public class ChineseIMEInitializer implements ClientModInitializer {
             } else {
                 this.ctrlShiftTPressed = false;
             }
-
-            boolean bracketLeftPressed = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_LEFT_BRACKET) == GLFW.GLFW_PRESS;
-            boolean bracketRightPressed = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_RIGHT_BRACKET) == GLFW.GLFW_PRESS;
-            if (this.imeManager != null && this.imeManager.hasInput()) {
-                if ((leftPressed && !prevLeftPressed) || (upPressed && !prevUpPressed)) {
-                    this.imeManager.selectPrev();
-                } else if ((rightPressed && !prevRightPressed) || (downPressed && !prevDownPressed)) {
-                    this.imeManager.selectNext();
-                }
-                if (bracketLeftPressed && !prevBracketLeftPressed) {
-                    this.imeManager.prevPage();
-                } else if (bracketRightPressed && !prevBracketRightPressed) {
-                    this.imeManager.nextPage();
-                }
-            }
-            prevBracketLeftPressed = bracketLeftPressed;
-            prevBracketRightPressed = bracketRightPressed;
         });
 
         LOGGER.info("[ChineseIME] Initialization complete! Platform: {}", PlatformIMEManager.getPlatform());
+    }
+
+    private void registerCallbacks() {
+        NativeImeBridge.CommitCallback commitCB = text -> {
+            if (text != null && text.length() > 0) {
+                String committed = text.toString();
+                LOGGER.info("[ChineseIME] CommitCallback: '{}'", committed);
+                insertTextToFocusedField(committed);
+                if (this.imeManager != null) {
+                    this.imeManager.clearInput();
+                }
+            }
+        };
+
+        NativeImeBridge.CandidateCallback candidateCB = (cands, count, selectedIdx) -> {
+            // Candidates are handled via polling + updateFromNativeState
+        };
+
+        NativeImeBridge.ImeChangeCallback imeChangeCB = (int imeType, int chineseMode) -> {
+            LOGGER.info("[ChineseIME] IME changed to type: {}, chineseMode: {}", imeType, chineseMode);
+        };
+
+        NativeImeBridge.KeyboardCallback keyboardCB = (int capsLock, int shiftMode) -> {
+            // Keyboard state handled via polling
+        };
+
+        NativeImeBridge.setEventCallbacks(null, commitCB, candidateCB, imeChangeCB, keyboardCB);
+        LOGGER.info("[ChineseIME] IME event callbacks registered");
+    }
+
+    public void insertTextToFocusedField(String text) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc == null || mc.currentScreen == null) return;
+
+        if (mc.currentScreen instanceof ChatScreen chatScreen) {
+            try {
+                java.lang.reflect.Field field = chatScreen.getClass().getDeclaredField("chatField");
+                field.setAccessible(true);
+                TextFieldWidget chatField = (TextFieldWidget) field.get(chatScreen);
+                if (chatField != null) {
+                    String current = chatField.getText();
+                    int cursor = chatField.getCursor();
+                    String newText = current.substring(0, cursor) + text + current.substring(cursor);
+                    chatField.setText(newText);
+                    chatField.setCursor(cursor + text.length(), false);
+                    LOGGER.info("[ChineseIME] Inserted '{}' at cursor {}, new text: '{}'", text, cursor, newText);
+                }
+            } catch (Throwable e) {
+                LOGGER.warn("[ChineseIME] Failed to insert text to chat field: {}", e.getMessage());
+            }
+        }
+    }
+
+    public void handleEnterKey() {
+        if (this.imeManager == null) return;
+        CandidateHud h = this.imeManager.getHud();
+        VerticalCandidateHud v = this.imeManager.getVerticalHud();
+
+        String selected = null;
+        if (h.isVisible() && !h.getCandidates().isEmpty()) {
+            selected = h.getSelected();
+        } else if (v.isVisible() && !v.getCandidates().isEmpty()) {
+            selected = v.getSelected();
+        }
+
+        if (selected != null && !selected.isEmpty()) {
+            LOGGER.info("[ChineseIME] Enter: selecting candidate '{}'", selected);
+            insertTextToFocusedField(selected);
+            this.imeManager.clearInput();
+        }
+    }
+
+    public void handleNumberKey(int num) {
+        if (this.imeManager == null || num < 1 || num > 9) return;
+        CandidateHud h = this.imeManager.getHud();
+        VerticalCandidateHud v = this.imeManager.getVerticalHud();
+
+        java.util.List<String> candidates = null;
+        if (h.isVisible() && !h.getCandidates().isEmpty()) {
+            candidates = h.getCandidates();
+        } else if (v.isVisible() && !v.getCandidates().isEmpty()) {
+            candidates = v.getCandidates();
+        }
+
+        if (candidates != null && num <= candidates.size()) {
+            String selected = candidates.get(num - 1);
+            LOGGER.info("[ChineseIME] Number {}: selecting '{}'", num, selected);
+            insertTextToFocusedField(selected);
+            this.imeManager.clearInput();
+        }
+    }
+
+    public void handleBackspace() {
+        if (this.imeManager == null) return;
+        CandidateHud h = this.imeManager.getHud();
+        VerticalCandidateHud v = this.imeManager.getVerticalHud();
+
+        String comp = h.isVisible() ? h.getInput() : v.getInput();
+        if (comp != null && !comp.isEmpty()) {
+            if (comp.length() > 1) {
+                String newComp = comp.substring(0, comp.length() - 1);
+                java.util.List<String> suggestions = com.example.chineseime.engine.PinyinDictionary.getSuggestions(newComp);
+                h.updateCandidates(suggestions, newComp);
+                v.updateCandidates(suggestions, newComp);
+            } else {
+                this.imeManager.clearInput();
+            }
+        }
     }
 
     public static ChineseIMEInitializer getInstance() {

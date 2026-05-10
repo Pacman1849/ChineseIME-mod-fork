@@ -31,6 +31,9 @@ struct WinEventBridge {
     void refreshCandidates();
 
     bool isHooked() const { return hooked_; }
+    HWND getTargetWindow() const { return targetWindow_; }
+    void onForegroundChanged(HWND hwnd);
+    void onFocusChanged(HWND hwnd);
 
 private:
     WinEventBridge() = default;

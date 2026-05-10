@@ -367,35 +367,32 @@ STDMETHODIMP TsfMonitor::EndUIElement(DWORD dwUIElementId) {
 STDMETHODIMP TsfMonitor::OnActivated(DWORD dwProfileType, LANGID langid, REFCLSID clsid,
                                      REFGUID guidProfile, REFGUID guidCat, HKL hkl, DWORD dwFlags) {
     char dbg[512];
-    sprintf_s(dbg, "[ChineseIME] OnActivated: profileType=%d, langid=0x%04X, hkl=0x%IX, flags=0x%X, clsid=%08X-%04X\n",
-        (int)dwProfileType, langid, (DWORD64)hkl, dwFlags, clsid.Data1, clsid.Data2);
+    sprintf_s(dbg, "[ChineseIME] OnActivated: profileType=%d, langid=0x%04X, hkl=0x%IX, flags=0x%X\n"
+        "  clsid.Data1=0x%08X, guidProfile.Data1=0x%08X\n",
+        (int)dwProfileType, langid, (DWORD64)hkl, dwFlags,
+        clsid.Data1, guidProfile.Data1);
     OutputDebugStringA(dbg);
 
+    // updateInputMethodType now updates ImeStateManager internally
     updateInputMethodType(langid, clsid, guidProfile);
-    char dbg2[256];
-    sprintf_s(dbg2, "[ChineseIME] OnActivated: after updateInputMethodType, currentInputMethod_=%d\n", (int)currentInputMethod_);
-    OutputDebugStringA(dbg2);
 
-    if (dwFlags & TF_IPSINK_FLAG_ACTIVE) {
-        sprintf_s(dbg, "[ChineseIME] OnActivated: ACTIVE - type=%d\n", (int)currentInputMethod_);
-        OutputDebugStringA(dbg);
-
-        // Always update when activated - this is the most reliable event
-        if (currentInputMethod_ != InputMethodType::UNKNOWN && currentInputMethod_ != InputMethodType::ENGLISH) {
-            sprintf_s(dbg, "[ChineseIME] OnActivated: updating ImeStateManager to %d\n", (int)currentInputMethod_);
-            OutputDebugStringA(dbg);
-            ImeStateManager::get().updateInputMethod(currentInputMethod_);
-        } else {
-            // TSF GUID detection failed, try HKL
+    // If TSF detection gave UNKNOWN/ENGLISH, try HKL as fallback
+    if (currentInputMethod_ == InputMethodType::UNKNOWN || currentInputMethod_ == InputMethodType::ENGLISH) {
+        if (hkl) {
             InputMethodType hklType = detectInputMethodTypeFromHklSafe(hkl);
-            sprintf_s(dbg, "[ChineseIME] OnActivated: TSF failed, hklType=%d\n", (int)hklType);
+            sprintf_s(dbg, "[ChineseIME] OnActivated: HKL fallback type=%d\n", (int)hklType);
             OutputDebugStringA(dbg);
             if (hklType != InputMethodType::UNKNOWN && hklType != InputMethodType::ENGLISH) {
                 currentInputMethod_ = hklType;
                 ImeStateManager::get().updateInputMethod(hklType);
             }
         }
+    }
 
+    sprintf_s(dbg, "[ChineseIME] OnActivated: FINAL currentInputMethod_=%d\n", (int)currentInputMethod_);
+    OutputDebugStringA(dbg);
+
+    if (dwFlags & TF_IPSINK_FLAG_ACTIVE) {
         HWND fgWnd = GetForegroundWindow();
         bool imeOpen = false;
         bool isChineseLang = (langid == 0x0804 || langid == 0x0404 ||
@@ -484,6 +481,11 @@ bool TsfMonitor::detectChineseMode() {
 void TsfMonitor::updateCache() {
     ImeStateManager& mgr = ImeStateManager::get();
 
+    char dbg[256];
+    sprintf_s(dbg, "[ChineseIME] updateCache: start, currentInputMethod_=%d, chineseMode_=%d\n", 
+        (int)currentInputMethod_, chineseMode_ ? 1 : 0);
+    OutputDebugStringA(dbg);
+
     if (currentInputMethod_ == InputMethodType::UNKNOWN) {
         queryCurrentInputMethod();
     }
@@ -500,16 +502,23 @@ void TsfMonitor::updateCache() {
     bool candidatesFound = false;
 
     ITfContext* ctx = getCurrentContext();
+    sprintf_s(dbg, "[ChineseIME] updateCache: TSF ctx=%p\n", ctx);
+    OutputDebugStringA(dbg);
     if (ctx) {
         getCompositionString(ctx, composition);
         if (getCandidateList(ctx, candidates, selectedIndex)) {
             candidatesFound = true;
         }
+        sprintf_s(dbg, "[ChineseIME] updateCache: TSF candidatesFound=%d, candCnt=%d\n", 
+            candidatesFound ? 1 : 0, (int)candidates.size());
+        OutputDebugStringA(dbg);
         ctx->Release();
     }
 
     if (!candidatesFound) {
         HWND fgWnd = GetForegroundWindow();
+        sprintf_s(dbg, "[ChineseIME] updateCache: IMM fallback, fgWnd=0x%p\n", fgWnd);
+        OutputDebugStringA(dbg);
         if (fgWnd) {
             HIMC himc = ImmGetContext(fgWnd);
             if (himc) {
@@ -555,6 +564,10 @@ void TsfMonitor::updateCache() {
             }
         }
     }
+
+    sprintf_s(dbg, "[ChineseIME] updateCache: final candidates cnt=%d, composition='%S'\n", 
+        (int)candidates.size(), composition.c_str());
+    OutputDebugStringA(dbg);
 
     mgr.updateCandidates(composition, candidates, selectedIndex);
 
@@ -736,63 +749,92 @@ bool TsfMonitor::getCandidateListFromProperty(ITfContext* pic, std::vector<std::
 }
 
 void TsfMonitor::updateInputMethodType(LANGID langid, REFCLSID clsid, REFGUID guidProfile) {
-    char dbg[512];
-    sprintf_s(dbg, "[ChineseIME] updateInputMethodType: langid=0x%04x, clsid=%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X\n"
-        "  guidProfile=%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X\n",
+    char dbg[1024];
+    sprintf_s(dbg, "[ChineseIME] updateInputMethodType: langid=0x%04x\n"
+        "  clsid=%08X-%04X-%04X-%02X%02X%02X%02X%02X%02X%02X%02X\n"
+        "  guidProfile=%08X-%04X-%04X-%02X%02X%02X%02X%02X%02X%02X%02X\n",
         langid,
-        clsid.Data1, clsid.Data2, clsid.Data3, clsid.Data4[0], clsid.Data4[1], clsid.Data4[2], clsid.Data4[3],
+        clsid.Data1, clsid.Data2, clsid.Data3,
+        clsid.Data4[0], clsid.Data4[1], clsid.Data4[2], clsid.Data4[3],
         clsid.Data4[4], clsid.Data4[5], clsid.Data4[6], clsid.Data4[7],
-        guidProfile.Data1, guidProfile.Data2, guidProfile.Data3, guidProfile.Data4[0], guidProfile.Data4[1],
-        guidProfile.Data4[2], guidProfile.Data4[3], guidProfile.Data4[4], guidProfile.Data4[5], guidProfile.Data4[6], guidProfile.Data4[7]);
+        guidProfile.Data1, guidProfile.Data2, guidProfile.Data3,
+        guidProfile.Data4[0], guidProfile.Data4[1], guidProfile.Data4[2], guidProfile.Data4[3],
+        guidProfile.Data4[4], guidProfile.Data4[5], guidProfile.Data4[6], guidProfile.Data4[7]);
     OutputDebugStringA(dbg);
 
-    if (langid == 0x0804 || langid == 0x0404 || langid == 0x0C04 || langid == 0x1404) {
-        bool detected = false;
+    // Comprehensive GUID matching - try ALL known GUIDs for each IME type
+    bool detected = false;
 
-        // Check against known Microsoft IME GUIDs
-        if (IsEqualGUID(guidProfile, GUID_MS_PINYIN) || IsEqualGUID(clsid, GUID_MS_PINYIN)) {
+    // --- PINYIN GUIDs (Microsoft Pinyin) ---
+    // Try both the profile GUID and the component CLSID
+    if (IsEqualGUID(guidProfile, GUID_MS_PINYIN) || IsEqualGUID(clsid, GUID_MS_PINYIN)) {
+        currentInputMethod_ = InputMethodType::PINYIN;
+        detected = true;
+        OutputDebugStringA("[ChineseIME] -> PINYIN (GUID match)\n");
+    }
+    // Try Microsoft Pinyin known component CLSID
+    else if (clsid.Data1 == 0xE429B25A) {
+        currentInputMethod_ = InputMethodType::PINYIN;
+        detected = true;
+        sprintf_s(dbg, "[ChineseIME] -> PINYIN (clsid.Data1=0x%X matches MSPY CLSID)\n", clsid.Data1);
+        OutputDebugStringA(dbg);
+    }
+    // Try by clsid.Data1 ranges for common IMEs
+    else if (clsid.Data1 == 0x4BDF9F03) {
+        currentInputMethod_ = InputMethodType::CANGJIE;
+        detected = true;
+        OutputDebugStringA("[ChineseIME] -> CANGJIE (clsid.Data1 match)\n");
+    }
+    else if (clsid.Data1 == 0x82590C13) {
+        currentInputMethod_ = InputMethodType::WUBI;
+        detected = true;
+        OutputDebugStringA("[ChineseIME] -> WUBI (clsid.Data1 match)\n");
+    }
+    else if (clsid.Data1 == 0x6024B45F) {
+        currentInputMethod_ = InputMethodType::SUCHENG;
+        detected = true;
+        OutputDebugStringA("[ChineseIME] -> SUCHENG (clsid.Data1 match)\n");
+    }
+    else if (clsid.Data1 == 0xB115690A) {
+        currentInputMethod_ = InputMethodType::ZHUYIN;
+        detected = true;
+        OutputDebugStringA("[ChineseIME] -> ZHUYIN (clsid.Data1 match)\n");
+    }
+
+    // --- Language-based default ---
+    if (!detected) {
+        if (langid == 0x0804) {
+            // zh-CN default: PINYIN
             currentInputMethod_ = InputMethodType::PINYIN;
-            detected = true;
-            OutputDebugStringA("[ChineseIME] -> PINYIN (GUID match)\n");
-        } else if (IsEqualGUID(guidProfile, GUID_MS_ZHUYIN) || IsEqualGUID(clsid, GUID_MS_ZHUYIN)) {
-            currentInputMethod_ = InputMethodType::ZHUYIN;
-            detected = true;
-            OutputDebugStringA("[ChineseIME] -> ZHUYIN (GUID match)\n");
-        } else if (IsEqualGUID(guidProfile, GUID_MS_CANGJIE) || IsEqualGUID(clsid, GUID_MS_CANGJIE)) {
+            OutputDebugStringA("[ChineseIME] -> PINYIN (default for zh-CN)\n");
+        } else if (langid == 0x0404 || langid == 0x0C04 || langid == 0x1404) {
+            // zh-TW/HK default: CANGJIE
             currentInputMethod_ = InputMethodType::CANGJIE;
-            detected = true;
-            OutputDebugStringA("[ChineseIME] -> CANGJIE (GUID match)\n");
-        } else if (IsEqualGUID(guidProfile, GUID_MS_WUBI) || IsEqualGUID(clsid, GUID_MS_WUBI)) {
-            currentInputMethod_ = InputMethodType::WUBI;
-            detected = true;
-            OutputDebugStringA("[ChineseIME] -> WUBI (GUID match)\n");
-        } else if (IsEqualGUID(guidProfile, GUID_MS_SUCHENG) || IsEqualGUID(clsid, GUID_MS_SUCHENG)) {
-            currentInputMethod_ = InputMethodType::SUCHENG;
-            detected = true;
-            OutputDebugStringA("[ChineseIME] -> SUCHENG (GUID match)\n");
+            OutputDebugStringA("[ChineseIME] -> CANGJIE (default for zh-TW/HK)\n");
+        } else {
+            currentInputMethod_ = InputMethodType::ENGLISH;
+            OutputDebugStringA("[ChineseIME] -> ENGLISH\n");
         }
+    }
 
-        if (!detected) {
-            // No GUID match - use language-based default
-            if (langid == 0x0804) {
-                currentInputMethod_ = InputMethodType::PINYIN;
-                OutputDebugStringA("[ChineseIME] -> PINYIN (default for zh-CN)\n");
-            } else {
-                currentInputMethod_ = InputMethodType::CANGJIE;
-                OutputDebugStringA("[ChineseIME] -> CANGJIE (default for zh-TW/HK)\n");
-            }
-        }
-    } else {
-        currentInputMethod_ = InputMethodType::ENGLISH;
-        OutputDebugStringA("[ChineseIME] -> ENGLISH\n");
+    // CRITICAL: Always update ImeStateManager when we have a valid type
+    // This is the key fix - don't let polling thread override event-driven detection
+    if (currentInputMethod_ != InputMethodType::UNKNOWN && currentInputMethod_ != InputMethodType::ENGLISH) {
+        char dbg2[256];
+        sprintf_s(dbg2, "[ChineseIME] updateInputMethodType: updating ImeStateManager to %d\n", (int)currentInputMethod_);
+        OutputDebugStringA(dbg2);
+        ImeStateManager::get().updateInputMethod(currentInputMethod_);
+    } else if (currentInputMethod_ == InputMethodType::ENGLISH) {
+        ImeStateManager::get().updateInputMethod(InputMethodType::ENGLISH);
+        OutputDebugStringA("[ChineseIME] updateInputMethodType: setting ENGLISH\n");
     }
 }
 
-static int g_debugCounter = 0;
-static InputMethodType g_lastLoggedType = InputMethodType::UNKNOWN;
-
 void TsfMonitor::queryCurrentInputMethod() {
     static int queryCount = 0;
+    static int g_debugCounter = 0;
+    static InputMethodType g_lastLoggedType = InputMethodType::UNKNOWN;
+
     queryCount++;
     if (queryCount <= 3) {
         OutputDebugStringA("[ChineseIME] queryCurrentInputMethod called\n");
@@ -804,16 +846,16 @@ void TsfMonitor::queryCurrentInputMethod() {
         return;
     }
 
-    bool typeFromTsf = false;
-
     if (queryCount <= 3) {
         char dbg[128];
         sprintf_s(dbg, "[ChineseIME] queryCurrentInputMethod: klName=%S\n", klName);
         OutputDebugStringA(dbg);
     }
 
+    bool typeFromTsf = false;
+    InputMethodType descType = InputMethodType::UNKNOWN;
+
     {
-        // Use EnumLanguageProfiles to get all profiles and find the active one
         HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
         bool comInitialized = SUCCEEDED(hr);
 
@@ -821,30 +863,59 @@ void TsfMonitor::queryCurrentInputMethod() {
         hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr,
             CLSCTX_INPROC_SERVER, IID_ITfInputProcessorProfiles, (void**)&profiles);
         if (SUCCEEDED(hr)) {
+            // Method 1: Get ITfInputProcessorProfileMgr and use GetActiveProfile (MOST RELIABLE)
+            ITfInputProcessorProfileMgr* profileMgr = nullptr;
+            hr = profiles->QueryInterface(IID_ITfInputProcessorProfileMgr, (void**)&profileMgr);
+            if (SUCCEEDED(hr) && profileMgr) {
+                TF_INPUTPROCESSORPROFILE activeFullProfile;
+                hr = profileMgr->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &activeFullProfile);
+                if (SUCCEEDED(hr)) {
+                    char dbg[256];
+                    sprintf_s(dbg, "[ChineseIME] GetActiveProfile: langid=0x%04X, clsid=0x%08X, guid=%08X, type=%d\n",
+                        activeFullProfile.langid, activeFullProfile.clsid.Data1,
+                        activeFullProfile.guidProfile.Data1, (int)activeFullProfile.dwProfileType);
+                    OutputDebugStringA(dbg);
+
+                    if ((activeFullProfile.langid == 0x0804 || activeFullProfile.langid == 0x0404) &&
+                        activeFullProfile.dwProfileType == TF_PROFILETYPE_INPUTPROCESSOR) {
+                        updateInputMethodType(activeFullProfile.langid, activeFullProfile.clsid, activeFullProfile.guidProfile);
+                        if (currentInputMethod_ != InputMethodType::UNKNOWN &&
+                            currentInputMethod_ != InputMethodType::ENGLISH &&
+                            currentInputMethod_ != InputMethodType::OTHER_CHINESE) {
+                            typeFromTsf = true;
+                            OutputDebugStringA("[ChineseIME] queryCurrentInputMethod: used GetActiveProfile\n");
+                        }
+                    }
+                }
+                profileMgr->Release();
+            }
+
+            // Method 3: Enumerate all profiles and find the active one
             IEnumTfLanguageProfiles* enumProfiles = nullptr;
             hr = profiles->EnumLanguageProfiles(0, &enumProfiles);
             if (SUCCEEDED(hr) && enumProfiles) {
                 TF_LANGUAGEPROFILE tfProfile;
                 ULONG fetched = 0;
                 while (enumProfiles->Next(1, &tfProfile, &fetched) == S_OK) {
-                    char dbg[128];
-                    sprintf_s(dbg, "[ChineseIME] TSF Enum: profile langid=0x%04X, clsid=%08X-%04X-%04X\n",
-                        tfProfile.langid, tfProfile.clsid.Data1, tfProfile.clsid.Data2, tfProfile.clsid.Data3);
-                    OutputDebugStringA(dbg);
-
-                    // Only process Chinese language profiles
                     if (tfProfile.langid == 0x0804 || tfProfile.langid == 0x0404) {
-                        updateInputMethodType(tfProfile.langid, tfProfile.clsid, tfProfile.guidProfile);
-                        
-                        // Accept if we got a definite type (not OTHER_CHINESE fallback)
-                        if (currentInputMethod_ != InputMethodType::UNKNOWN && 
-                            currentInputMethod_ != InputMethodType::ENGLISH &&
-                            currentInputMethod_ != InputMethodType::OTHER_CHINESE) {
-                            typeFromTsf = true;
-                            char dbg2[128];
-                            sprintf_s(dbg2, "[ChineseIME] TSF Enum: accepted type=%d\n", (int)currentInputMethod_);
-                            OutputDebugStringA(dbg2);
-                            break;
+                        char dbg[256];
+                        sprintf_s(dbg, "[ChineseIME] TSF Enum: langid=0x%04X, clsid=0x%08X, fActive=%d, guidProfile=%08X\n",
+                            tfProfile.langid, tfProfile.clsid.Data1, tfProfile.fActive ? 1 : 0,
+                            tfProfile.guidProfile.Data1);
+                        OutputDebugStringA(dbg);
+
+                        // fActive is TRUE for the currently active profile
+                        if (tfProfile.fActive && !typeFromTsf) {
+                            updateInputMethodType(tfProfile.langid, tfProfile.clsid, tfProfile.guidProfile);
+                            if (currentInputMethod_ != InputMethodType::UNKNOWN &&
+                                currentInputMethod_ != InputMethodType::ENGLISH &&
+                                currentInputMethod_ != InputMethodType::OTHER_CHINESE) {
+                                typeFromTsf = true;
+                                char dbg2[128];
+                                sprintf_s(dbg2, "[ChineseIME] TSF Enum: accepted active profile type=%d\n", (int)currentInputMethod_);
+                                OutputDebugStringA(dbg2);
+                                // Don't break - keep enumerating for debug info
+                            }
                         }
                     }
                 }
@@ -856,21 +927,29 @@ void TsfMonitor::queryCurrentInputMethod() {
         if (comInitialized) CoUninitialize();
     }
 
-    if (!typeFromTsf) {
-        // Fallback to HKL-based detection
-        DWORD_PTR hklValue = reinterpret_cast<DWORD_PTR>(GetKeyboardLayout(0));
-        WORD imeId = HIWORD(hklValue);
-        LANGID langId = LOWORD(hklValue);
-        InputMethodType hklType = detectInputMethodTypeFromHklSafe(GetKeyboardLayout(0));
+    // Use description-based detection as additional check
+    if (!typeFromTsf && descType != InputMethodType::UNKNOWN) {
+        currentInputMethod_ = descType;
+        ImeStateManager::get().updateInputMethod(descType);
+        typeFromTsf = true;
+        char dbgDesc[128];
+        sprintf_s(dbgDesc, "[ChineseIME] queryCurrentInputMethod: used description-based detection -> %d\n", (int)descType);
+        OutputDebugStringA(dbgDesc);
+    }
 
+    if (!typeFromTsf) {
+        // Last resort: HKL-based detection
+        HKL hkl = GetKeyboardLayout(0);
+        InputMethodType hklType = detectInputMethodTypeFromHklSafe(hkl);
         if (hklType != InputMethodType::UNKNOWN && hklType != InputMethodType::ENGLISH) {
             currentInputMethod_ = hklType;
+            ImeStateManager::get().updateInputMethod(hklType);
         }
 
         g_debugCounter++;
         if (g_debugCounter % 600 == 0 || currentInputMethod_ != g_lastLoggedType) {
             char dbg[128];
-            sprintf_s(dbg, "[ChineseIME] IME (HKL fallback): klName=%S, imeId=0x%X, type=%d\n", klName, imeId, (int)currentInputMethod_);
+            sprintf_s(dbg, "[ChineseIME] IME (HKL fallback): klName=%S, type=%d\n", klName, (int)currentInputMethod_);
             OutputDebugStringA(dbg);
             g_lastLoggedType = currentInputMethod_;
         }
