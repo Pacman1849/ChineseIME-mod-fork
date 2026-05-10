@@ -94,6 +94,12 @@ public static boolean isAvailable() {
 - `ImmGetOpenStatus(himc) != 0` → IME 打开 → 中文模式
 - `ImmGetOpenStatus(himc) == 0` → IME 关闭 → 英文模式（Shift 切换后）
 - 这与 Shift 切换中英文的机制完全对应
+- **注意**: 2026-05-10 发现 Shift 状态检测异常问题，可能与 `chineseMode_` 检测逻辑有关，待调查
+
+### IME 类型检测（2026-05-10 简化版）
+- TSF 输入法：`HIWORD(hkl) == LOWORD(hkl)` 时表示是 TSF 输入法
+- 直接使用语言默认：zh-CN (0x0804) → PINYIN，zh-TW (0x0404/0x0C04/0x1404) → CANGJIE
+- 复杂检测逻辑已移除以避免刷屏和误判
 
 ### TSF Compartment 检测的局限性
 - `detectChineseMode()` 中的 TSF compartment 检测可能失败

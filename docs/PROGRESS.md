@@ -83,11 +83,18 @@
 - **问题**: 拼音输入法被错误识别为仓颉
 - **修复**: 2026-05-10 修复了 5 个相关 bug
 - **待验证**: DebugView 日志确认类型检测正确
+- **2026-05-10 最新状态**:
+  - 简化 `PollIMEState()` 函数，移除刷屏调试日志
+  - 修复 TSF 输入法检测（`imeId == langId` 时使用语言默认）
+  - zh-CN (0x0804) → PINYIN, zh-TW (0x0404/0x0C04/0x1404) → CANGJIE
+  - Shift 状态异常问题（`chineseMode_` 检测）待进一步调查
+  - 候选词不显示问题待验证
 
 ### 候选词同步
 - **问题**: IMM32 `ImmGetCandidateList` 对 TSF 架构输入法返回 0
 - **解决方案**: 启用 TSF Polling 通过 `GUID_PROP_CANDIDATE` 读取候选词
 - **状态**: 已实现，待完整验证
+- **已知问题**: 微软拼音等 TSF 输入法候选词仍不显示，可能需要使用 ITfCandidateList
 
 ---
 
@@ -142,13 +149,36 @@ ChineseIME-Fabric-1.21.4/
 
 ## 当前状态
 
-- **C++ DLL**: `natives/Release/chineseime_native.dll` (编译成功, 2026-05-10 调试版)
+- **C++ DLL**: `natives/Release/chineseime_native.dll` (编译成功, 2026-05-10 简化版)
 - **Java Mod**: `build/libs/chineseime-1.0.0.jar` (编译成功)
 - **部署位置**: PrismLauncher mods 文件夹
 - **DLL 加载**: 已修复 `isAvailable()` 自动调用 `getInstance()`
 - **WndProc Hook**: 已实现
 - **TSF Polling**: 已实现
-- **IME 类型检测**: 调试版本已部署（2026-05-10），待 DebugView 验证
+- **IME 类型检测**: 已修复，TSF 输入法使用语言默认
+- **调试日志**: 已大幅简化，只在前 5 次轮询时输出
+
+---
+
+## 当前未解决问题 (2026-05-10)
+
+### ⚠️ 拼音输入法 Shift 状态异常
+- **现象**: Shift 状态检测异常（会一直被检测为开）
+- **可能原因**: `chineseMode_` 字段检测逻辑问题
+- **状态**: 待调查
+
+### ⚠️ 候选词不显示
+- **影响**: 所有微软中文输入法（拼音/五笔/仓颉/速成）
+- **可能原因**:
+  1. IMM32 `ImmGetCandidateList` 对 TSF 输入法返回 0
+  2. TSF Polling 候选词读取可能有问题
+  3. 可能需要使用 `ITfCandidateList` COM 接口获取 TSF 候选词
+- **状态**: 待进一步调查和修复
+
+### ⚠️ 速成使用拼音 HUD
+- **现象**: 速成输入法使用拼音的 HUD 而不是仓颉的垂直 HUD
+- **原因**: IME 类型检测错误
+- **状态**: 已修复检测逻辑，待验证
 
 ---
 
@@ -166,16 +196,15 @@ ChineseIME-Fabric-1.21.4/
 
 ## 已知问题
 
-### IME 类型检测错误（拼音显示"倉"）⚠️ 重点排查
+### IME 类型检测错误（拼音显示"倉"）✅ 已修复（2026-05-10）
 - **现象**: 英文正确显示"En"，拼音显示"倉"，速成也显示"倉"；一旦错误检测后切换输入法不会更新
-- **根本原因**: 多层检测逻辑的 bug 链：
-  1. TSF GUID 比较失败 → `OTHER_CHINESE` → Java 映射为 `CANGJIE`
-  2. `queryCurrentInputMethod()` 枚举所有 profiles 而非活动 profile
-  3. `PollIMEState()` 首次检测后永不更新（`tsfHasSetType` 永远为 true）
-  4. `pollUpdate()` 只在 UNKNOWN/ENGLISH 时查询
-- **修复状态**: 2026-05-10 已修复所有 bug，添加全面调试日志
-- **验证方法**: 启动游戏，用 DebugView 过滤 `[ChineseIME]` 查看日志
-- **详细分析**: 见 `documents/IME_Detection_Debug.md`
+- **根本原因**: 多层检测逻辑的 bug 链
+- **修复状态**: 2026-05-10 已简化检测逻辑：
+  - TSF 输入法（`imeId == langId`）直接使用语言默认
+  - zh-CN (0x0804) → PINYIN (type=2)
+  - zh-TW (0x0404/0x0C04/0x1404) → CANGJIE (type=4)
+  - 移除了复杂的 layout name 解析逻辑
+- **验证方法**: 启动游戏，DebugView 查看 `PollIME #N: ... type=X`，type=2 为拼音，type=4 为仓颉
 
 ### 候选词不同步（TSF IME）
 - **影响**: 微软拼音、微软五笔等现代 TSF 输入法的候选词
@@ -212,12 +241,21 @@ ChineseIME-Fabric-1.21.4/
 | 微软仓颉 | IMM32 | `ImmGetCandidateList` 正常 | Hook 正常 |
 | 微软速成 | IMM32 | `ImmGetCandidateList` 正常 | Hook 正常 |
 
+### IME 类型检测逻辑（2026-05-10 简化版）
+**TSF 输入法检测**：
+- 对于 TSF 输入法，`HIWORD(hkl)` 返回的是语言 ID（如 0x0804）而不是 IME ID
+- 检测方法：`imeId == langId` 时表示是 TSF 输入法
+- 默认映射：zh-CN → PINYIN，zh-TW → CANGJIE
+
+**IMM32 输入法检测**：
+- 使用 `HIWORD(hkl)` 获取真实的 IME ID
+- 根据 IME ID 映射到对应的输入法类型
+
 ### 调试方法
 - C++ 调试输出: 使用 Windows DebugView 工具查看 `OutputDebugStringA`
 - Java 调试输出: 查看游戏日志中的 `[ChineseIME]` 前缀日志
 - **关键日志序列（IME 类型检测）**:
-  1. `PollIME #N: kl=00000804, imeId=0x0, detected=N, cached=N, imeOpen=1` (轮询)
-  2. `PollIME: updating IME type X -> Y` (类型变更)
-  3. `OnActivated: profileType=N, langid=0x0804` (TSF 事件)
-  4. `updateInputMethodType: langid=0x0804, clsid=...` (GUID 匹配)
-  5. `ImeStateManager::updateInputMethod: X -> Y` (状态更新)
+  1. `PollIME #N: hkl=0x..., imeId=0x..., type=X, open=Y` (前 5 次轮询)
+  2. type=2 为 PINYIN (拼音)
+  3. type=4 为 CANGJIE (仓颉/速成)
+  4. type=6 为 SUCHENG (速成)
