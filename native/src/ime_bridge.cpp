@@ -100,13 +100,15 @@ void PollIMEState() {
     pollCount++;
 
     HWND fgWnd = g_targetWindow;
+    if (!fgWnd) fgWnd = chineseime::WinEventBridge::GetWinEventTargetWindow();
     if (!fgWnd) fgWnd = GetForegroundWindow();
     if (!fgWnd) fgWnd = GetActiveWindow();
     if (!fgWnd) return;
 
     HIMC himc = ImmGetContext(fgWnd);
     if (!himc) {
-        HWND testWnd = GetForegroundWindow();
+        HWND testWnd = chineseime::WinEventBridge::GetWinEventTargetWindow();
+        if (!testWnd) testWnd = GetForegroundWindow();
         if (testWnd && testWnd != fgWnd) {
             HIMC testHimc = ImmGetContext(testWnd);
             if (testHimc) {
@@ -552,6 +554,12 @@ __declspec(dllexport) void FreeBuffer(void* ptr) {
 
 __declspec(dllexport) const char* GetDllVersion(void) {
     return VERSION;
+}
+
+__declspec(dllexport) int IsComposing(void) {
+    // Check if there's a non-empty composition string
+    auto state = chineseime::ImeStateManager::get().getSnapshot();
+    return !state.composition.empty() ? 1 : 0;
 }
 
 __declspec(dllexport) int HasLayoutChanged(void) {

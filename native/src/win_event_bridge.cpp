@@ -122,6 +122,11 @@ WinEventBridge& WinEventBridge::get() {
     return instance;
 }
 
+// Global function to get the target window from WinEventBridge
+HWND WinEventBridge::GetWinEventTargetWindow() {
+    return WinEventBridge::get().getTargetWindow();
+}
+
 void WinEventBridge::setCallbacks(EventCallbacks&& callbacks) {
     callbacks_ = std::move(callbacks);
     g_callbacksRegistered = true;
@@ -284,11 +289,38 @@ void WinEventBridge::readCandidates(HIMC himc) {
     }
 }
 
+// Helper function to check if a string contains Chinese characters
+static bool containsChinese(const wchar_t* str) {
+    if (!str) return false;
+    while (*str) {
+        wchar_t c = *str;
+        // Check for CJK Unified Ideographs (U+4E00 - U+9FFF)
+        // Also include CJK Compatibility (U+3400 - U+4DBF) and Extension B+
+        if ((c >= 0x4E00 && c <= 0x9FFF) ||
+            (c >= 0x3400 && c <= 0x4DBF) ||
+            (c >= 0x20000 && c <= 0x2A6DF)) {
+            return true;
+        }
+        // Check for punctuation and common symbols used in Chinese
+        // Full-width punctuation
+        if ((c >= 0xFF00 && c <= 0xFFEF)) {
+            return true;
+        }
+        str++;
+    }
+    return false;
+}
+
 void WinEventBridge::processImeComposition(HWND hwnd, LPARAM lParam) {
     HIMC himc = ImmGetContext(hwnd);
     if (!himc) return;
 
-    if (lParam & GCS_COMPSTR) {
+    // Only process messages that have composition or result data
+    // Ignore messages that only have cursor position or other flags
+    bool hasCompStr = (lParam & GCS_COMPSTR) != 0;
+    bool hasResultStr = (lParam & GCS_RESULTSTR) != 0;
+
+    if (hasCompStr) {
         readComposition(himc, lParam);
     }
 
@@ -296,11 +328,11 @@ void WinEventBridge::processImeComposition(HWND hwnd, LPARAM lParam) {
         readCompositionCursor(himc);
     }
 
-    if ((lParam & GCS_COMPSTR) && !lastComposition_.empty()) {
+    if (hasCompStr && !lastComposition_.empty()) {
         readCandidates(himc);
     }
 
-    if (lParam & GCS_RESULTSTR) {
+    if (hasResultStr) {
         LONG len = ImmGetCompositionStringW(himc, GCS_RESULTSTR, nullptr, 0);
         if (len > 0) {
             std::vector<wchar_t> buf(len / sizeof(wchar_t) + 1);
@@ -309,8 +341,18 @@ void WinEventBridge::processImeComposition(HWND hwnd, LPARAM lParam) {
                 int wcharLen = actual / sizeof(wchar_t);
                 buf[wcharLen] = 0;
 
-                if (callbacks_.commitCallback) {
-                    callbacks_.commitCallback(buf.data());
+                // Filter: only commit if result contains Chinese characters
+                // This prevents raw pinyin or partial input from being committed
+                if (containsChinese(buf.data())) {
+                    if (callbacks_.commitCallback) {
+                        callbacks_.commitCallback(buf.data());
+                    }
+                } else {
+                    // Result doesn't contain Chinese - this might be an error
+                    // Log it for debugging
+                    char dbg[256];
+                    sprintf_s(dbg, "[ChineseIME] WARNING: GCS_RESULTSTR without Chinese: '%S'\n", buf.data());
+                    OutputDebugStringA(dbg);
                 }
 
                 lastComposition_.clear();
@@ -375,13 +417,16 @@ void WinEventBridge::processImeNotify(WPARAM wParam, LPARAM) {
 LRESULT CALLBACK WinEventBridge::ImeWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     auto& bridge = WinEventBridge::get();
 
+    // Track IME composition state
+    static bool inComposition = false;
+
     // Log all IME-related messages
     if (msg >= WM_IME_STARTCOMPOSITION && msg <= WM_IME_KEYLAST) {
         char dbg[128];
         const char* msgName = "?";
-        if (msg == WM_IME_STARTCOMPOSITION) msgName = "STARTCOMP";
+        if (msg == WM_IME_STARTCOMPOSITION) { msgName = "STARTCOMP"; inComposition = true; }
         else if (msg == WM_IME_COMPOSITION) msgName = "COMP";
-        else if (msg == WM_IME_ENDCOMPOSITION) msgName = "ENDCOMP";
+        else if (msg == WM_IME_ENDCOMPOSITION) { msgName = "ENDCOMP"; inComposition = false; }
         else if (msg == WM_IME_NOTIFY) msgName = "NOTIFY";
         else if (msg == WM_IME_SETCONTEXT) msgName = "SETCTX";
         else if (msg == WM_INPUTLANGCHANGE) msgName = "INPUTLANG";
@@ -392,6 +437,7 @@ LRESULT CALLBACK WinEventBridge::ImeWndProc(HWND hWnd, UINT msg, WPARAM wParam, 
 
     switch (msg) {
         case WM_IME_STARTCOMPOSITION: {
+            inComposition = true;
             bridge.processImeEndComposition(hWnd);
             break;
         }
@@ -402,6 +448,7 @@ LRESULT CALLBACK WinEventBridge::ImeWndProc(HWND hWnd, UINT msg, WPARAM wParam, 
         }
 
         case WM_IME_ENDCOMPOSITION: {
+            inComposition = false;
             bridge.processImeEndComposition(hWnd);
             break;
         }
@@ -414,6 +461,38 @@ LRESULT CALLBACK WinEventBridge::ImeWndProc(HWND hWnd, UINT msg, WPARAM wParam, 
         case WM_IME_SETCONTEXT:
         case WM_INPUTLANGCHANGE:
             break;
+
+        // Block WM_CHAR messages during IME composition to prevent raw characters from being sent
+        case WM_CHAR: {
+            if (inComposition) {
+                // IME is composing - block WM_CHAR to prevent duplicate characters
+                // The final character will come from WM_IME_COMPOSITION with GCS_RESULTSTR
+                char dbg[128];
+                sprintf_s(dbg, "[ChineseIME] ImeWndProc: BLOCKED WM_CHAR (0x%02X) during composition\n", (unsigned)wParam);
+                OutputDebugStringA(dbg);
+                return 0; // Block the message
+            }
+            break;
+        }
+
+        // Block certain key down events during composition
+        case WM_KEYDOWN: {
+            if (inComposition) {
+                // During composition, most keys should not be sent to the game
+                // The exception might be certain control keys, but for now block letter keys
+                UINT vk = (UINT)wParam;
+                // Block alphanumeric keys and some punctuation during composition
+                if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) {
+                    char dbg[128];
+                    sprintf_s(dbg, "[ChineseIME] ImeWndProc: BLOCKED WM_KEYDOWN (vk=0x%02X) during composition\n", vk);
+                    OutputDebugStringA(dbg);
+                    return 0; // Block the message
+                }
+                // Allow control keys through (Enter, Backspace, Escape, etc.)
+                // But for now, let them through for proper IME handling
+            }
+            break;
+        }
     }
 
     if (g_originalWndProc) {

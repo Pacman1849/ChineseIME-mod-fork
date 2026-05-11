@@ -204,6 +204,10 @@ public class NativeImeBridge {
         return len <= 0 ? "" : buffer.getWideString(0);
     }
 
+    public static boolean isComposing() {
+        return isAvailable() && INSTANCE.IsComposing() != 0;
+    }
+
     public static int getCandidateCount() {
         return isAvailable() ? INSTANCE.GetCandidateCount() : 0;
     }
@@ -361,6 +365,7 @@ public class NativeImeBridge {
         void StopListen();
         int IsListening();
         int IsChineseMode();
+        int IsComposing();
         int HasLayoutChanged();
         int StartTsfListen();
         void StopTsfListen();

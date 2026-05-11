@@ -35,6 +35,9 @@ struct WinEventBridge {
     void onForegroundChanged(HWND hwnd);
     void onFocusChanged(HWND hwnd);
 
+    // Get the target window from WinEventBridge (for use by other modules)
+    static HWND GetWinEventTargetWindow();
+
 private:
     WinEventBridge() = default;
 

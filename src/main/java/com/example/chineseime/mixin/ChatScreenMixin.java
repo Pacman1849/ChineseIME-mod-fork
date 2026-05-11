@@ -1,6 +1,7 @@
 package com.example.chineseime.mixin;
 
 import com.example.chineseime.ChineseIMEInitializer;
+import com.example.chineseime.platform.win32.NativeImeBridge;
 import net.minecraft.client.gui.screen.ChatScreen;
 import org.lwjgl.glfw.GLFW;
 import org.spongepowered.asm.mixin.Mixin;
@@ -43,25 +44,41 @@ public abstract class ChatScreenMixin {
         boolean hasCandidates = (h != null && h.isVisible() && !h.getCandidates().isEmpty()) ||
                                (v != null && v.isVisible() && !v.getCandidates().isEmpty());
 
-        if (!hasCandidates) return;
+        if (hasCandidates) {
+            if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
+                instance.handleEnterKey();
+                cir.setReturnValue(true);
+                return;
+            }
 
-        if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
-            instance.handleEnterKey();
-            cir.setReturnValue(true);
-            return;
+            if (keyCode == GLFW.GLFW_KEY_BACKSPACE) {
+                instance.handleBackspace();
+                cir.setReturnValue(true);
+                return;
+            }
+
+            if (keyCode >= GLFW.GLFW_KEY_1 && keyCode <= GLFW.GLFW_KEY_9) {
+                int num = keyCode - GLFW.GLFW_KEY_1 + 1;
+                instance.handleNumberKey(num);
+                cir.setReturnValue(true);
+                return;
+            }
         }
 
-        if (keyCode == GLFW.GLFW_KEY_BACKSPACE) {
-            instance.handleBackspace();
-            cir.setReturnValue(true);
-            return;
-        }
-
-        if (keyCode >= GLFW.GLFW_KEY_1 && keyCode <= GLFW.GLFW_KEY_9) {
-            int num = keyCode - GLFW.GLFW_KEY_1 + 1;
-            instance.handleNumberKey(num);
-            cir.setReturnValue(true);
-            return;
+        // Block letter keys and number keys when IME is composing
+        // This prevents raw pinyin from being sent to the game
+        if (NativeImeBridge.isComposing()) {
+            // Block all letter keys (A-Z)
+            if ((keyCode >= GLFW.GLFW_KEY_A && keyCode <= GLFW.GLFW_KEY_Z) ||
+                // Block number keys (0-9)
+                (keyCode >= GLFW.GLFW_KEY_0 && keyCode <= GLFW.GLFW_KEY_9) ||
+                // Block numpad number keys
+                (keyCode >= GLFW.GLFW_KEY_KP_0 && keyCode <= GLFW.GLFW_KEY_KP_9) ||
+                // Block space (common in some IME interactions)
+                keyCode == GLFW.GLFW_KEY_SPACE) {
+                cir.setReturnValue(true);
+                return;
+            }
         }
     }
 }

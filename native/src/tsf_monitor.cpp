@@ -2,6 +2,7 @@
 #include "ime_state_manager.h"
 #include "sta_thread.h"
 #include "jni_callback.h"
+#include "win_event_bridge.h"
 #include <comdef.h>
 #include <algorithm>
 #include <msctf.h>
@@ -537,12 +538,16 @@ STDMETHODIMP TsfMonitor::OnChange(REFGUID rguid) {
 }
 
 bool TsfMonitor::detectChineseMode() {
-    HWND fgWnd = GetForegroundWindow();
-    if (fgWnd) {
-        HIMC himc = ImmGetContext(fgWnd);
+    // Use hooked window from WinEventBridge if available
+    HWND targetWnd = WinEventBridge::GetWinEventTargetWindow();
+    if (!targetWnd) {
+        targetWnd = GetForegroundWindow();
+    }
+    if (targetWnd) {
+        HIMC himc = ImmGetContext(targetWnd);
         if (himc) {
             bool imeOpen = ImmGetOpenStatus(himc) != 0;
-            ImmReleaseContext(fgWnd, himc);
+            ImmReleaseContext(targetWnd, himc);
             chineseMode_ = imeOpen;
             return chineseMode_;
         }
@@ -621,11 +626,16 @@ void TsfMonitor::updateCache() {
     }
 
     if (!candidatesFound) {
-        HWND fgWnd = GetForegroundWindow();
-        sprintf_s(dbg, "[ChineseIME] updateCache: IMM fallback, fgWnd=0x%p\n", fgWnd);
+        // Use the hooked window from WinEventBridge instead of GetForegroundWindow()
+        // This is more reliable as it tracks the actual game window
+        HWND targetWnd = WinEventBridge::GetWinEventTargetWindow();
+        if (!targetWnd) {
+            targetWnd = GetForegroundWindow();
+        }
+        sprintf_s(dbg, "[ChineseIME] updateCache: IMM fallback, targetWnd=0x%p\n", targetWnd);
         OutputDebugStringA(dbg);
-        if (fgWnd) {
-            HIMC himc = ImmGetContext(fgWnd);
+        if (targetWnd) {
+            HIMC himc = ImmGetContext(targetWnd);
             if (himc) {
                 LONG compLen = ImmGetCompositionString(himc, GCS_COMPSTR, nullptr, 0);
                 if (compLen <= 0) {
@@ -665,7 +675,7 @@ void TsfMonitor::updateCache() {
                     composition.c_str(), (int)candidates.size(), candidatesFound ? 1 : 0);
                 OutputDebugStringA(debugBuf);
 
-                ImmReleaseContext(fgWnd, himc);
+                ImmReleaseContext(targetWnd, himc);
             }
         }
     }
@@ -677,11 +687,15 @@ void TsfMonitor::updateCache() {
     mgr.updateCandidates(composition, candidates, selectedIndex);
 
     // Use foreground window's thread to get keyboard layout
-    HWND fgWnd = GetForegroundWindow();
+    // Use the hooked window from WinEventBridge for keyboard layout check
+    HWND targetWnd = WinEventBridge::GetWinEventTargetWindow();
+    if (!targetWnd) {
+        targetWnd = GetForegroundWindow();
+    }
     HKL hkl = nullptr;
-    if (fgWnd) {
-        DWORD fgThreadId = GetWindowThreadProcessId(fgWnd, nullptr);
-        hkl = GetKeyboardLayout(fgThreadId);
+    if (targetWnd) {
+        DWORD threadId = GetWindowThreadProcessId(targetWnd, nullptr);
+        hkl = GetKeyboardLayout(threadId);
     }
     if (hkl) {
         LANGID langId = LOWORD(reinterpret_cast<DWORD_PTR>(hkl));
@@ -701,7 +715,11 @@ void TsfMonitor::updateCache() {
                 mgr.updateChineseMode(false);
             } else if (imType != InputMethodType::OTHER_CHINESE) {
                 mgr.updateInputMethod(imType);
-                HWND checkWnd = GetForegroundWindow();
+                // Use the hooked window for IME status check
+                HWND checkWnd = WinEventBridge::GetWinEventTargetWindow();
+                if (!checkWnd) {
+                    checkWnd = GetForegroundWindow();
+                }
                 bool imeOpen = true;
                 if (checkWnd) {
                     HIMC himc = ImmGetContext(checkWnd);
