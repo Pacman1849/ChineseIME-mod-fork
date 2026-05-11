@@ -1,5 +1,6 @@
 package com.example.chineseime.hud;
 
+import com.example.chineseime.engine.InputMode;
 import java.util.ArrayList;
 import java.util.List;
 import net.minecraft.client.MinecraftClient;
@@ -14,6 +15,7 @@ public class VerticalCandidateHud {
     private int perPage = 9;
     private boolean visible = false;
     private int x, y, width, height;
+    private InputMode currentInputMethod = InputMode.CANGJIE;
 
     private static final int BG = 0xB3000000;
     private static final int SEL_BG = 0x66B1B4B6;
@@ -61,6 +63,14 @@ public class VerticalCandidateHud {
         } else {
             this.visible = !this.candidates.isEmpty() || !this.composition.isEmpty();
         }
+    }
+
+    /**
+     * Update candidates with selection preservation and InputMethodType tracking (Grok fix)
+     */
+    public void updateKeepSelection(List<String> candidates, String composition, int selectedIndex, int page, InputMode inputMethodType) {
+        this.currentInputMethod = inputMethodType != null ? inputMethodType : InputMode.CANGJIE;
+        this.updateCandidatesKeepSelection(candidates, composition, selectedIndex, page);
     }
 
     public void clear() {
@@ -127,6 +137,7 @@ public class VerticalCandidateHud {
     public int getWidth() { return this.width; }
     public int getHeight() { return this.height; }
     public int getPerPage() { return this.perPage; }
+    public InputMode getCurrentInputMethod() { return this.currentInputMethod; }
     public void setSelectedIndex(int selected) { this.selected = selected; }
     public void setPage(int page) { this.page = page; }
     public void setVisible(boolean visible) { this.visible = visible; }

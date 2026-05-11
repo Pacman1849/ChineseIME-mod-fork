@@ -188,6 +188,27 @@ bool TsfMonitor::initialize(IUnknown* pThreadMgr) {
         OutputDebugStringA(dbg);
     }
 
+    // Register UI element sink for candidate list notifications via ITfSource
+    if (threadMgrSource_) {
+        hr = threadMgrSource_->AdviseSink(IID_ITfUIElementSink,
+            static_cast<ITfUIElementSink*>(this), &uiElementSinkCookie_);
+        if (SUCCEEDED(hr)) {
+            OutputDebugStringA("[ChineseIME] UIElement sink registered\n");
+        } else {
+            char dbg[128];
+            sprintf_s(dbg, "[ChineseIME] UIElement sink AdviseSink failed: hr=0x%X\n", hr);
+            OutputDebugStringA(dbg);
+        }
+    }
+
+    // Get UI element manager for reading candidates from UI elements
+    ITfUIElementMgr* uiElemMgr = nullptr;
+    hr = threadMgr_->QueryInterface(IID_ITfUIElementMgr, (void**)&uiElemMgr);
+    if (SUCCEEDED(hr) && uiElemMgr) {
+        uiElementMgr_ = uiElemMgr;
+        OutputDebugStringA("[ChineseIME] UIElementMgr obtained\n");
+    }
+
     DEBUG_LOG_SIMPLE(L"[ChineseIME] TsfMonitor::initialize: done\n");
 
     if (docMgr_) {
@@ -205,6 +226,18 @@ bool TsfMonitor::initialize(IUnknown* pThreadMgr) {
 
 void TsfMonitor::shutdown() {
     unregisterSinks();
+
+    // Unregister UI element sink
+    if (threadMgrSource_ && uiElementSinkCookie_ != TF_INVALID_COOKIE) {
+        threadMgrSource_->UnadviseSink(uiElementSinkCookie_);
+        uiElementSinkCookie_ = TF_INVALID_COOKIE;
+    }
+
+    // Release UI element manager
+    if (uiElementMgr_) {
+        uiElementMgr_->Release();
+        uiElementMgr_ = nullptr;
+    }
 
     if (threadMgrSource_) {
         if (profileSinkCookie_ != TF_INVALID_COOKIE) {
@@ -232,45 +265,39 @@ void TsfMonitor::refreshState() {
 }
 
 void TsfMonitor::pollUpdate() {
-    static int callCount = 0;
-    callCount++;
-    if (callCount <= 10 || callCount % 300 == 0) {
-        char dbg[128];
-        sprintf_s(dbg, "[ChineseIME] Tsf pollUpdate #%d: currentInputMethod_=%d\n", callCount, (int)currentInputMethod_);
-        OutputDebugStringA(dbg);
-    }
-
     // Always try to query the current input method on each poll
     // The HKL might have changed
     queryCurrentInputMethod();
-    
+
     // If we detected a type, update the state manager
     if (currentInputMethod_ != InputMethodType::UNKNOWN && currentInputMethod_ != InputMethodType::ENGLISH) {
         ImeStateManager::get().updateInputMethod(currentInputMethod_);
-        
-        if (callCount <= 10) {
-            char dbg[128];
-            sprintf_s(dbg, "[ChineseIME] Tsf pollUpdate: updating to type %d\n", (int)currentInputMethod_);
-            OutputDebugStringA(dbg);
-        }
     }
-    
-    // Also check via HKL for consistency
-    HKL hkl = GetKeyboardLayout(0);
-    if (hkl) {
-        InputMethodType hklType = detectInputMethodTypeFromHklSafe(hkl);
-        if (hklType != InputMethodType::UNKNOWN && hklType != InputMethodType::ENGLISH) {
-            // If HKL gives a different (and better) type, prefer it
-            // HKL is more reliable for detecting the actual keyboard layout
-            if (hklType != currentInputMethod_) {
+
+    // Also check via HKL for consistency - use foreground window's thread
+    HWND fgWnd = GetForegroundWindow();
+    if (fgWnd) {
+        DWORD fgThreadId = GetWindowThreadProcessId(fgWnd, nullptr);
+        HKL hkl = GetKeyboardLayout(fgThreadId);
+        if (hkl) {
+            InputMethodType hklType = detectInputMethodTypeFromHklSafe(hkl);
+
+            // If HKL indicates non-Chinese keyboard (ENGLISH), force update to ENGLISH
+            if (hklType == InputMethodType::ENGLISH || hklType == InputMethodType::UNKNOWN) {
+                if (currentInputMethod_ != InputMethodType::ENGLISH) {
+                    currentInputMethod_ = InputMethodType::ENGLISH;
+                    ImeStateManager::get().updateInputMethod(InputMethodType::ENGLISH);
+                }
+            } else if (hklType != currentInputMethod_) {
                 currentInputMethod_ = hklType;
                 ImeStateManager::get().updateInputMethod(hklType);
-                char dbg[128];
-                sprintf_s(dbg, "[ChineseIME] Tsf pollUpdate: HKL override to type %d\n", (int)hklType);
-                OutputDebugStringA(dbg);
             }
         }
     }
+
+    // Update candidates and composition from TSF/IMM
+    // This is critical for showing candidates in the HUD
+    updateCache();
 }
 
 STDMETHODIMP TsfMonitor::QueryInterface(REFIID riid, void** ppv) {
@@ -353,14 +380,92 @@ STDMETHODIMP TsfMonitor::BeginUIElement(DWORD dwUIElementId, BOOL* pbShow) {
     char buf[128];
     sprintf_s(buf, "[ChineseIME] BeginUIElement: id=%d\n", dwUIElementId);
     OutputDebugStringA(buf);
+
+    // Try to get candidates from the UI element when it appears
+    if (uiElementMgr_) {
+        ITfUIElement* element = nullptr;
+        HRESULT hr = uiElementMgr_->GetUIElement(dwUIElementId, &element);
+        if (SUCCEEDED(hr) && element) {
+            ITfCandidateListUIElement* candUI = nullptr;
+            hr = element->QueryInterface(IID_ITfCandidateListUIElement, (void**)&candUI);
+            if (SUCCEEDED(hr) && candUI) {
+                UINT count = 0;
+                candUI->GetCount(&count);
+                if (count > 0) {
+                    std::vector<std::wstring> candidates;
+                    UINT selIndex = 0;
+                    candUI->GetSelection(&selIndex);
+                    for (UINT i = 0; i < count && i < 10; i++) {
+                        BSTR bstr = nullptr;
+                        if (candUI->GetString(i, &bstr) == S_OK && bstr) {
+                            candidates.push_back(bstr);
+                            SysFreeString(bstr);
+                        }
+                    }
+                    if (!candidates.empty()) {
+                        ImeStateManager::get().updateCandidates(L"", candidates, (int)selIndex);
+                    }
+                }
+                candUI->Release();
+            }
+            element->Release();
+        }
+    }
+
+    // Refresh state to get candidates when UI element appears
+    updateCache();
     return S_OK;
 }
 
 STDMETHODIMP TsfMonitor::UpdateUIElement(DWORD dwUIElementId) {
+    char buf[128];
+    sprintf_s(buf, "[ChineseIME] UpdateUIElement: id=%d\n", dwUIElementId);
+    OutputDebugStringA(buf);
+
+    // Try to get candidates from the UI element
+    if (uiElementMgr_) {
+        ITfUIElement* element = nullptr;
+        HRESULT hr = uiElementMgr_->GetUIElement(dwUIElementId, &element);
+        if (SUCCEEDED(hr) && element) {
+            ITfCandidateListUIElement* candUI = nullptr;
+            hr = element->QueryInterface(IID_ITfCandidateListUIElement, (void**)&candUI);
+            if (SUCCEEDED(hr) && candUI) {
+                UINT count = 0;
+                candUI->GetCount(&count);
+                if (count > 0) {
+                    std::vector<std::wstring> candidates;
+                    UINT selIndex = 0;
+                    candUI->GetSelection(&selIndex);
+                    for (UINT i = 0; i < count && i < 10; i++) {
+                        BSTR bstr = nullptr;
+                        if (candUI->GetString(i, &bstr) == S_OK && bstr) {
+                            candidates.push_back(bstr);
+                            SysFreeString(bstr);
+                        }
+                    }
+                    if (!candidates.empty()) {
+                        ImeStateManager::get().updateCandidates(L"", candidates, (int)selIndex);
+                    }
+                }
+                candUI->Release();
+            }
+            element->Release();
+        }
+    }
+
+    // Also refresh state to get updated candidates from cache
+    updateCache();
     return S_OK;
 }
 
 STDMETHODIMP TsfMonitor::EndUIElement(DWORD dwUIElementId) {
+    char buf[128];
+    sprintf_s(buf, "[ChineseIME] EndUIElement: id=%d\n", dwUIElementId);
+    OutputDebugStringA(buf);
+
+    // Clear candidates when UI element closes
+    auto state = ImeStateManager::get().getSnapshot();
+    ImeStateManager::get().updateCandidates(L"", {}, 0);
     return S_OK;
 }
 
@@ -571,7 +676,13 @@ void TsfMonitor::updateCache() {
 
     mgr.updateCandidates(composition, candidates, selectedIndex);
 
-    HKL hkl = GetKeyboardLayout(0);
+    // Use foreground window's thread to get keyboard layout
+    HWND fgWnd = GetForegroundWindow();
+    HKL hkl = nullptr;
+    if (fgWnd) {
+        DWORD fgThreadId = GetWindowThreadProcessId(fgWnd, nullptr);
+        hkl = GetKeyboardLayout(fgThreadId);
+    }
     if (hkl) {
         LANGID langId = LOWORD(reinterpret_cast<DWORD_PTR>(hkl));
 
@@ -590,13 +701,13 @@ void TsfMonitor::updateCache() {
                 mgr.updateChineseMode(false);
             } else if (imType != InputMethodType::OTHER_CHINESE) {
                 mgr.updateInputMethod(imType);
-                HWND fgWnd = GetForegroundWindow();
+                HWND checkWnd = GetForegroundWindow();
                 bool imeOpen = true;
-                if (fgWnd) {
-                    HIMC himc = ImmGetContext(fgWnd);
+                if (checkWnd) {
+                    HIMC himc = ImmGetContext(checkWnd);
                     if (himc) {
                         imeOpen = ImmGetOpenStatus(himc) != 0;
-                        ImmReleaseContext(fgWnd, himc);
+                        ImmReleaseContext(checkWnd, himc);
                     }
                 }
                 mgr.updateImeOpen(imeOpen);
@@ -722,16 +833,13 @@ bool TsfMonitor::getCandidateList(ITfContext* pic, std::vector<std::wstring>& ca
     candidates.clear();
     selectedIndex = 0;
     if (!pic) return false;
-    return getCandidateListFromProperty(pic, candidates, selectedIndex);
+    return getCandidateListFromProperty(pic, candidates, selectedIndex) && !candidates.empty();
 }
 
 bool TsfMonitor::getCandidateListFromProperty(ITfContext* pic, std::vector<std::wstring>& candidates, int& selectedIndex) {
     candidates.clear();
     selectedIndex = 0;
-
     if (!pic) return false;
-
-    DEBUG_LOG_SIMPLE(L"[ChineseIME] getCandidateListFromProperty: trying\n");
 
     bool success = false;
     TsfEditSession* session = new TsfEditSession(pic, &candidates, &success);
@@ -740,12 +848,10 @@ bool TsfMonitor::getCandidateListFromProperty(ITfContext* pic, std::vector<std::
     session->Release();
 
     if (FAILED(hr) || !success) {
-        DEBUG_LOG_SIMPLE(L"[ChineseIME] getCandidateListFromProperty: failed\n");
         return false;
     }
 
-    DEBUG_LOG(L"[ChineseIME] getCandidateListFromProperty: got %d candidates\n", (int)candidates.size());
-    return true;
+    return !candidates.empty();
 }
 
 void TsfMonitor::updateInputMethodType(LANGID langid, REFCLSID clsid, REFGUID guidProfile) {

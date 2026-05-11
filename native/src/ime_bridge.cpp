@@ -66,111 +66,29 @@ chineseime::InputMethodType DetectInputMethodTypeFromHkl(HKL hkl) {
     LANGID langId = LOWORD(reinterpret_cast<DWORD_PTR>(hkl));
     DWORD_PTR hklValue = reinterpret_cast<DWORD_PTR>(hkl);
     WORD imeId = HIWORD(hklValue);
-    chineseime::InputMethodType type = chineseime::detectInputMethodTypeFromImeId(imeId, langId);
 
-    // For TSF IMEs, imeId equals langId, which means it's not a real IME ID
-    // We need to extract the actual IME ID from klName
-    bool isValidImeId = (imeId != 0 && imeId != langId);
+    // For TSF IMEs, imeId equals langId
+    bool isTsfIme = (imeId == langId);
 
-    WCHAR klName[16] = {0};
-    if (GetKeyboardLayoutNameW(klName) && klName[0] && (!isValidImeId || type == chineseime::InputMethodType::OTHER_CHINESE || type == chineseime::InputMethodType::UNKNOWN) && IsChineseLangId(langId)) {
-        // Extract IME ID from positions 4-7
-        WCHAR layoutLow = klName[7];
-        WCHAR layoutHigh = klName[6];
-        WORD extractedId = 0;
-
-        switch (layoutLow) {
-        case '0': case '1': case '2': case '3': case '4':
-        case '5': case '6': case '7': case '8': case '9':
-            extractedId = static_cast<WORD>(layoutLow - L'0' + ((layoutHigh - L'0') << 4));
-            break;
-        case 'A': case 'B': case 'C': case 'D': case 'E': case 'F':
-        case 'a': case 'b': case 'c': case 'd': case 'e': case 'f': {
-            WORD lowNibble = (layoutLow >= L'a') ? (WORD)(layoutLow - L'a' + 10) : (WORD)(layoutLow - L'A' + 10);
-            WORD highNibble = (layoutHigh >= L'a') ? (WORD)(layoutHigh - L'a' + 10) : (WORD)(layoutHigh - L'A' + 10);
-            extractedId = static_cast<WORD>(lowNibble + (highNibble << 4));
-            break;
-        }
-        }
-
-        // Reject pure language IDs
-        bool isLanguageIdOnly = (extractedId == 0x0804 || extractedId == 0x0404 ||
-                                 extractedId == 0x0C04 || extractedId == 0x1404 ||
-                                 extractedId == 0x1004 || extractedId == 0);
-
-        if (!isLanguageIdOnly) {
-            type = chineseime::detectInputMethodTypeFromImeId(extractedId, langId);
-        } else {
-            // Try first 4 chars for TSF IMEs with longer layout names
-            WCHAR fullLow = klName[3];
-            WCHAR fullHigh = klName[2];
-            WORD fullExtractedId = 0;
-
-            switch (fullLow) {
-            case '0': case '1': case '2': case '3': case '4':
-            case '5': case '6': case '7': case '8': case '9':
-                fullExtractedId = static_cast<WORD>(fullLow - L'0' + ((fullHigh - L'0') << 4));
-                break;
-            case 'A': case 'B': case 'C': case 'D': case 'E': case 'F':
-            case 'a': case 'b': case 'c': case 'd': case 'e': case 'f': {
-                WORD lowNibble = (fullLow >= L'a') ? (WORD)(fullLow - L'a' + 10) : (WORD)(fullLow - L'A' + 10);
-                WORD highNibble = (fullHigh >= L'a') ? (WORD)(fullHigh - L'a' + 10) : (WORD)(fullHigh - L'A' + 10);
-                fullExtractedId = static_cast<WORD>(lowNibble + (highNibble << 4));
-                break;
-            }
-            }
-
-            bool isValidFullId = (fullExtractedId != 0 &&
-                fullExtractedId != 0x0804 && fullExtractedId != 0x0404 &&
-                fullExtractedId != 0x0C04 && fullExtractedId != 0x1404 &&
-                fullExtractedId != 0x1004);
-
-            if (isValidFullId) {
-                type = chineseime::detectInputMethodTypeFromImeId(fullExtractedId, langId);
-            } else {
-                // Use language default
-                if (langId == 0x0804) {
-                    type = chineseime::InputMethodType::PINYIN;
-                } else if (langId == 0x0404 || langId == 0x0C04 || langId == 0x1404 || langId == 0x1004) {
-                    type = chineseime::InputMethodType::CANGJIE;
-                }
-            }
+    if (isTsfIme) {
+        // TSF IME - use language default
+        if (langId == 0x0804) {
+            return chineseime::InputMethodType::PINYIN;
+        } else if (langId == 0x0404 || langId == 0x0C04 || langId == 0x1404 || langId == 0x1004) {
+            return chineseime::InputMethodType::CANGJIE;
         }
     }
-    return type;
+
+    // IMM32 IME - use IME ID
+    return chineseime::detectInputMethodTypeFromImeId(imeId, langId);
 }
 
 void PollKeyboardState() {
-    bool capsLockOn = false;
-    bool shiftPressed = false;
-
-    HWND fgWnd = g_targetWindow;
-    if (!fgWnd) fgWnd = GetForegroundWindow();
-    if (!fgWnd) fgWnd = GetActiveWindow();
-
-    if (fgWnd) {
-        DWORD fgThreadId = GetWindowThreadProcessId(fgWnd, nullptr);
-        DWORD pollThreadId = GetCurrentThreadId();
-        if (fgThreadId != pollThreadId) {
-            AttachThreadInput(pollThreadId, fgThreadId, TRUE);
-        }
-
-        BYTE keyboardState[256];
-        if (GetKeyboardState(keyboardState)) {
-            capsLockOn = (keyboardState[VK_CAPITAL] & 0x01) != 0;
-            shiftPressed = (keyboardState[VK_SHIFT] & 0x80) != 0;
-        }
-
-        if (fgThreadId != pollThreadId) {
-            AttachThreadInput(pollThreadId, fgThreadId, FALSE);
-        }
-    } else {
-        BYTE keyboardState[256];
-        if (GetKeyboardState(keyboardState)) {
-            capsLockOn = (keyboardState[VK_CAPITAL] & 0x01) != 0;
-            shiftPressed = (keyboardState[VK_SHIFT] & 0x80) != 0;
-        }
-    }
+    // Use GetAsyncKeyState for reliable physical key state detection
+    // GetAsyncKeyState doesn't require thread attachment and always returns
+    // the current state of the physical keyboard keys
+    bool shiftPressed = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+    bool capsLockOn = (GetKeyState(VK_CAPITAL) & 0x01) != 0;
 
     chineseime::ImeStateManager::get().updateKeyboardState(capsLockOn, shiftPressed);
 }
@@ -219,60 +137,80 @@ void PollIMEState() {
         AttachThreadInput(pollThreadId, fgThreadId, TRUE);
     }
 
-    HKL hkl = GetKeyboardLayout(0);
+    // Use fgThreadId to get the keyboard layout of the foreground window's thread
+    HKL hkl = GetKeyboardLayout(fgThreadId);
     chineseime::InputMethodType detectedType = chineseime::InputMethodType::UNKNOWN;
+    LANGID langId = 0;
 
     if (hkl) {
         DWORD_PTR hklValue = reinterpret_cast<DWORD_PTR>(hkl);
         WORD imeId = HIWORD(hklValue);
-        LANGID langId = LOWORD(hklValue);
+        langId = LOWORD(hklValue);
+
+        // For TSF IMEs: imeId often equals the language ID (e.g., 0x0804 for zh-CN, 0x0404 for zh-TW)
+        bool isTsfIme = (imeId == langId);
 
         // Try to detect IME type from HKL (for legacy IMM32 IMEs)
-        if (imeId != 0 && imeId != langId) {
+        // Only check if imeId is not equal to langId (i.e., not TSF IME)
+        if (!isTsfIme && imeId != 0) {
             detectedType = chineseime::detectInputMethodTypeFromImeId(imeId, langId);
+            char dbg[256];
+            sprintf_s(dbg, "[ChineseIME] PollIME: IMM32 imeId=0x%X, detected=%d\n", imeId, (int)detectedType);
+            OutputDebugStringA(dbg);
         }
 
         // For TSF IMEs (imeId == langId), use language-based defaults
-        if (detectedType == chineseime::InputMethodType::UNKNOWN ||
+        if (isTsfIme || detectedType == chineseime::InputMethodType::UNKNOWN ||
             detectedType == chineseime::InputMethodType::OTHER_CHINESE) {
             if (langId == 0x0804) {
                 detectedType = chineseime::InputMethodType::PINYIN;
+                char dbg[64];
+                sprintf_s(dbg, "[ChineseIME] PollIME: TSF zh-CN -> PINYIN\n");
+                OutputDebugStringA(dbg);
             } else if (langId == 0x0404 || langId == 0x0C04 || langId == 0x1404 || langId == 0x1004) {
                 detectedType = chineseime::InputMethodType::CANGJIE;
+                char dbg[64];
+                sprintf_s(dbg, "[ChineseIME] PollIME: TSF zh-TW -> CANGJIE\n");
+                OutputDebugStringA(dbg);
             }
         }
 
-        // Log only first 5 polls to reduce spam
-        if (pollCount <= 5) {
-            char dbg[256];
-            sprintf_s(dbg, "[ChineseIME] PollIME #%d: hkl=0x%IX, imeId=0x%X, type=%d, open=%d\n",
-                pollCount, (DWORD64)hkl, imeId, (int)detectedType, imeOpen ? 1 : 0);
-            OutputDebugStringA(dbg);
+        // Log the final detected type
+        char dbg[256];
+        sprintf_s(dbg, "[ChineseIME] PollIME: hkl=0x%IX, imeId=0x%X, langId=0x%X, isTsf=%d, finalType=%d, open=%d\n",
+            (DWORD64)hkl, imeId, langId, isTsfIme ? 1 : 0, (int)detectedType, imeOpen ? 1 : 0);
+        OutputDebugStringA(dbg);
+
+        // Update type based on HKL language
+        // If HKL is not a Chinese keyboard, force ENGLISH
+        bool isChineseHkl = (langId == 0x0804 || langId == 0x0404 || langId == 0x0C04 || langId == 0x1404 || langId == 0x1004);
+
+        if (!isChineseHkl) {
+            // Non-Chinese keyboard layout - force ENGLISH
+            auto cachedType = mgr.getSnapshot().inputMethodType;
+            if (cachedType != chineseime::InputMethodType::ENGLISH) {
+                mgr.updateInputMethod(chineseime::InputMethodType::ENGLISH);
+            }
+        } else if (imeOpen) {
+            // Chinese keyboard and IME is open - update detected type
+            if (detectedType != chineseime::InputMethodType::UNKNOWN &&
+                detectedType != chineseime::InputMethodType::ENGLISH &&
+                detectedType != chineseime::InputMethodType::OTHER_CHINESE) {
+                auto cachedType = mgr.getSnapshot().inputMethodType;
+                if (detectedType != cachedType) {
+                    mgr.updateInputMethod(detectedType);
+                }
+            }
         }
+        // If Chinese HKL but IME closed, don't change - let TSF monitor handle it
+    } else {
+        OutputDebugStringA("[ChineseIME] PollIME: hkl is NULL\n");
     }
 
     // Detach thread input
     DWORD detachingThreadId = GetCurrentThreadId();
     if (fgThreadId != detachingThreadId) {
         AttachThreadInput(detachingThreadId, fgThreadId, FALSE);
-    }
-
-    // Update type only when meaningful detection and different from cached
-    if (imeOpen) {
-        if (detectedType != chineseime::InputMethodType::UNKNOWN &&
-            detectedType != chineseime::InputMethodType::ENGLISH &&
-            detectedType != chineseime::InputMethodType::OTHER_CHINESE) {
-            auto cachedType = mgr.getSnapshot().inputMethodType;
-            if (detectedType != cachedType) {
-                mgr.updateInputMethod(detectedType);
-            }
-        }
-    } else {
-        auto cachedType = mgr.getSnapshot().inputMethodType;
-        if (cachedType != chineseime::InputMethodType::ENGLISH &&
-            cachedType != chineseime::InputMethodType::UNKNOWN) {
-            mgr.updateInputMethod(chineseime::InputMethodType::ENGLISH);
-        }
     }
 
     // Read composition and candidates
@@ -333,7 +271,22 @@ __declspec(dllexport) int StartListen(void* hwnd) {
 
     g_targetWindow = hwnd ? reinterpret_cast<HWND>(hwnd) : nullptr;
 
-    HKL hkl = GetKeyboardLayout(0);
+    // Use the target window's thread to get the keyboard layout
+    HWND targetWnd = g_targetWindow;
+    HKL hkl = nullptr;
+    if (targetWnd) {
+        DWORD targetThreadId = GetWindowThreadProcessId(targetWnd, nullptr);
+        hkl = GetKeyboardLayout(targetThreadId);
+        char dbg[128];
+        sprintf_s(dbg, "[ChineseIME] StartListen: targetThreadId=%u, hkl=0x%IX\n", targetThreadId, (DWORD64)(DWORD_PTR)hkl);
+        OutputDebugStringA(dbg);
+    }
+
+    if (!hkl) {
+        hkl = GetKeyboardLayout(0);  // Fallback
+        OutputDebugStringA("[ChineseIME] StartListen: using GetKeyboardLayout(0) as fallback\n");
+    }
+
     if (hkl) {
         chineseime::InputMethodType type = DetectInputMethodTypeFromHkl(hkl);
         chineseime::ImeStateManager::get().updateInputMethod(type);
@@ -341,6 +294,11 @@ __declspec(dllexport) int StartListen(void* hwnd) {
         bool isChineseLang = IsChineseLangId(langId);
         chineseime::ImeStateManager::get().updateChineseMode(isChineseLang);
         chineseime::ImeStateManager::get().updateImeOpen(isChineseLang);
+
+        char dbg[128];
+        sprintf_s(dbg, "[ChineseIME] StartListen: detected type=%d, langId=0x%X, isChinese=%d\n",
+            (int)type, langId, isChineseLang ? 1 : 0);
+        OutputDebugStringA(dbg);
     }
 
     return 1;
@@ -555,10 +513,11 @@ __declspec(dllexport) int GetInputMethodType(void) {
 
 __declspec(dllexport) int GetShiftMode(void) {
     auto state = chineseime::ImeStateManager::get().getSnapshot();
-    bool isChineseInputMethod = state.inputMethodType != chineseime::InputMethodType::ENGLISH &&
-        state.inputMethodType != chineseime::InputMethodType::UNKNOWN;
-    bool inShiftMode = isChineseInputMethod && !state.chineseMode && state.imeOpen;
-    return inShiftMode ? 1 : 0;
+    // Shift mode should be determined by actual shift key state from keyboard
+    // The old logic (!chineseMode && imeOpen) is incorrect - it was detecting
+    // when IME is in "half-width" or English mode, not shift state
+    // Use the actual shiftPressed state instead
+    return state.shiftPressed ? 1 : 0;
 }
 
 __declspec(dllexport) int GetCapsLockState(void) {

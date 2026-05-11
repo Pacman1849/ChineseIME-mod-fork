@@ -25,16 +25,33 @@ InputMethodType detectInputMethodTypeFromImeId(WORD imeId, LANGID langId) {
     char klNameA[64] = {0};
     WideCharToMultiByte(CP_ACP, 0, klName, -1, klNameA, sizeof(klNameA), NULL, NULL);
 
-    // Check for IME-specific patterns in layout name
-    if (strstr(klNameA, "Pinyin") || strstr(klNameA, "MSPY") || strstr(klNameA, "kbdus")) {
-        return InputMethodType::PINYIN;
+    // For TSF IMEs: imeId often equals the language ID (e.g., 0x0804 for zh-CN, 0x0404 for zh-TW)
+    // Check if imeId is just a language ID (not a real IME ID) - this is a TSF IME
+    if (imeId == langId) {
+        // TSF IME - use language default
+        if (isZhCN) {
+            // zh-CN defaults to PINYIN
+            return InputMethodType::PINYIN;
+        } else if (isZhTW) {
+            // zh-TW defaults to CANGJIE (most common)
+            return InputMethodType::CANGJIE;
+        }
     }
+
+    // Check for IME-specific patterns in layout name (only for full word matches)
+    // Check Cangjie first (vertical layout IMEs)
     if (strstr(klNameA, "Cangjie") || strstr(klNameA, "SCangjie") ||
-        strstr(klNameA, "ChangJie") || strstr(klNameA, "cj") || strstr(klNameA, "CJ")) {
+        strstr(klNameA, "ChangJie")) {
         return InputMethodType::CANGJIE;
     }
-    if (strstr(klNameA, "Sucheng") || strstr(klNameA, "Quick") || strstr(klNameA, "SQuick")) {
+    // Check Sucheng (Quick)
+    if (strstr(klNameA, "Sucheng") || strstr(klNameA, "SQuick") ||
+        strstr(klNameA, "Quick")) {
         return InputMethodType::SUCHENG;
+    }
+    // Check other IMEs
+    if (strstr(klNameA, "Pinyin") || strstr(klNameA, "MSPY")) {
+        return InputMethodType::PINYIN;
     }
     if (strstr(klNameA, "Wubi") || strstr(klNameA, "WUBI")) {
         return InputMethodType::WUBI;
@@ -70,33 +87,14 @@ InputMethodType detectInputMethodTypeFromImeId(WORD imeId, LANGID langId) {
         break;
     }
 
-    // For TSF IMEs: imeId often equals the language ID (e.g., 0x0804 for zh-CN, 0x0404 for zh-TW)
-    // Check if imeId is just a language ID (not a real IME ID)
-    if (imeId == langId) {
-        // TSF IME - use language default
-        if (isZhCN) {
-            // zh-CN defaults to PINYIN
-            return InputMethodType::PINYIN;
-        } else if (isZhTW) {
-            // zh-TW defaults to CANGJIE (most common)
-            return InputMethodType::CANGJIE;
-        }
-    }
-
-    // Check IME ID ranges
+    // Fallback based on language
     if (isZhCN) {
-        BYTE highByte = (imeId >> 8) & 0xFF;
-        if (highByte == 0x08 || highByte == 0x09) {
-            return InputMethodType::PINYIN;
-        }
-    }
-
-    if (isZhTW) {
-        // For zh-TW, default to CANGJIE
+        return InputMethodType::PINYIN;
+    } else if (isZhTW) {
         return InputMethodType::CANGJIE;
     }
 
-    return isZhCN ? InputMethodType::PINYIN : InputMethodType::CANGJIE;
+    return InputMethodType::OTHER_CHINESE;
 }
 
 void ImeStateManager::updateInputMethod(InputMethodType type) {

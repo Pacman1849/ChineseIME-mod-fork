@@ -43,6 +43,11 @@ public class WindowsIMEEventBridge {
             NativeImeBridge.hookWindowProc(hwnd);
             ChineseIMEInitializer.LOGGER.info("[ChineseIME] hookWindowProc returned");
 
+            // Start listening for IME state changes
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] Starting IME listening...");
+            NativeImeBridge.startListening(hwnd);
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] IME listening started");
+
             ChineseIMEInitializer.LOGGER.info("[ChineseIME] Starting TSF listening...");
             int tsfResult = NativeImeBridge.startTsfListening();
             ChineseIMEInitializer.LOGGER.info("[ChineseIME] TSF listening started: {}", tsfResult);
@@ -78,7 +83,13 @@ public class WindowsIMEEventBridge {
     }
 
     public InputMode getDetectedInputMode() {
-        return NativeImeBridge.getInputMethodTypeAsEnum();
+        int rawType = NativeImeBridge.getInputMethodType();
+        InputMode mode = NativeImeBridge.getInputMethodTypeAsEnum(rawType);
+        // Debug log every 60 frames
+        if (debugFrame % 60 == 0) {
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] getDetectedInputMode: raw={}, enum={}", rawType, mode);
+        }
+        return mode;
     }
 
     public boolean isChineseMode() {
@@ -113,16 +124,25 @@ public class WindowsIMEEventBridge {
 
     private InputMode lastMode = null;
     private boolean lastVerticalLayout = false;
+    private int debugFrame = 0;
 
     public void updateFromNativeState() {
         String composition = NativeImeBridge.getCompositionString();
         java.util.List<String> candidates = NativeImeBridge.getCandidates();
         int selectedIndex = NativeImeBridge.getSelectedCandidateIndex();
+        InputMode currentMode = getDetectedInputMode();  // Get IME type
 
         boolean verticalLayout = isVerticalLayout();
 
+        // Debug logging every 60 frames
+        if (++debugFrame % 60 == 0) {
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] DEBUG: currentMode={}, verticalLayout={}, candidates={}, composition='{}'",
+                currentMode, verticalLayout, candidates.size(), composition);
+        }
+
         if (verticalLayout) {
-            verticalHud.updateCandidatesKeepSelection(candidates, composition, selectedIndex, 0);
+            // Pass IME type to vertical HUD (Grok fix)
+            verticalHud.updateKeepSelection(candidates, composition, selectedIndex, 0, currentMode);
             horizontalHud.clearInput();
             if (verticalHud.isVisible() != !composition.isEmpty() || !candidates.isEmpty()) {
                 verticalHud.setVisible(!composition.isEmpty() || !candidates.isEmpty());
@@ -131,7 +151,8 @@ public class WindowsIMEEventBridge {
                 horizontalHud.setVisible(false);
             }
         } else {
-            horizontalHud.updateCandidatesKeepSelection(candidates, composition, selectedIndex, 0);
+            // Pass IME type to horizontal HUD (Grok fix)
+            horizontalHud.updateKeepSelection(candidates, composition, selectedIndex, 0, currentMode);
             verticalHud.clearInput();
             if (horizontalHud.isVisible() != !composition.isEmpty() || !candidates.isEmpty()) {
                 horizontalHud.setVisible(!composition.isEmpty() || !candidates.isEmpty());
@@ -143,7 +164,6 @@ public class WindowsIMEEventBridge {
 
         lastVerticalLayout = verticalLayout;
 
-        InputMode currentMode = getDetectedInputMode();
         if (currentMode != lastMode) {
             ChineseIMEInitializer.LOGGER.info("[ChineseIME] IME type changed: {} -> {}", lastMode, currentMode);
             lastMode = currentMode;
