@@ -169,36 +169,52 @@ bool TsfMonitor::initialize(IUnknown* pThreadMgr) {
         DEBUG_LOG_SIMPLE(L"[ChineseIME] No focused document manager\n");
     }
 
+    // Get ITfSource from ITfThreadMgr for sink registration
     ITfSource* source = nullptr;
     hr = threadMgr_->QueryInterface(IID_ITfSource, (void**)&source);
-    if (SUCCEEDED(hr) && source) {
-        hr = source->AdviseSink(IID_ITfInputProcessorProfileActivationSink,
-            static_cast<ITfInputProcessorProfileActivationSink*>(this), &profileSinkCookie_);
-        if (SUCCEEDED(hr)) {
-            threadMgrSource_ = source;
-            DEBUG_LOG_SIMPLE(L"[ChineseIME] Profile sink registered\n");
-        } else {
-            char dbg[128];
-            sprintf_s(dbg, "[ChineseIME] AdviseSink failed: hr=0x%X\n", hr);
-            OutputDebugStringA(dbg);
-            source->Release();
-        }
-    } else {
+    if (FAILED(hr) || !source) {
         char dbg[128];
         sprintf_s(dbg, "[ChineseIME] QueryInterface ITfSource failed: hr=0x%X\n", hr);
         OutputDebugStringA(dbg);
-    }
+    } else {
+        // QueryInterface gives us refcount=1
+        // AdviseSink will addRef, UnadviseSink will Release
 
-    // Register UI element sink for candidate list notifications via ITfSource
-    if (threadMgrSource_) {
-        hr = threadMgrSource_->AdviseSink(IID_ITfUIElementSink,
-            static_cast<ITfUIElementSink*>(this), &uiElementSinkCookie_);
+        // Register profile activation sink (for detecting IME type changes)
+        DWORD profileCookie = TF_INVALID_COOKIE;
+        hr = source->AdviseSink(IID_ITfInputProcessorProfileActivationSink,
+            static_cast<ITfInputProcessorProfileActivationSink*>(this), &profileCookie);
         if (SUCCEEDED(hr)) {
-            OutputDebugStringA("[ChineseIME] UIElement sink registered\n");
+            profileSinkCookie_ = profileCookie;
+            threadMgrSource_ = source;  // Take ownership
+            DEBUG_LOG_SIMPLE(L"[ChineseIME] Profile sink registered\n");
+        } else {
+            char dbg[128];
+            sprintf_s(dbg, "[ChineseIME] AdviseSink(Profile) failed: hr=0x%X\n", hr);
+            OutputDebugStringA(dbg);
+        }
+
+        // Register UI element sink for candidate list notifications
+        // Use the SAME source pointer - ITfSource supports multiple sinks
+        DWORD uiElemCookie = TF_INVALID_COOKIE;
+        hr = source->AdviseSink(IID_ITfUIElementSink,
+            static_cast<ITfUIElementSink*>(this), &uiElemCookie);
+        if (SUCCEEDED(hr)) {
+            uiElementSinkCookie_ = uiElemCookie;
+            OutputDebugStringA("[ChineseIME] UIElement sink registered OK\n");
+            // If profile sink failed, we still own the source reference via UIElement sink
+            if (!threadMgrSource_) {
+                threadMgrSource_ = source;  // Take ownership
+            }
         } else {
             char dbg[128];
             sprintf_s(dbg, "[ChineseIME] UIElement sink AdviseSink failed: hr=0x%X\n", hr);
             OutputDebugStringA(dbg);
+            // If profile sink also failed, release our reference
+            if (!threadMgrSource_) {
+                source->Release();
+                source = nullptr;
+            }
         }
     }
 
@@ -265,6 +281,9 @@ void TsfMonitor::refreshState() {
     updateCache();
 }
 
+// Forward declaration for window enumeration fallback (defined at end of file)
+static std::vector<std::wstring> getCandidatesFromWindowEnumeration();
+
 void TsfMonitor::pollUpdate() {
     // Always try to query the current input method on each poll
     // The HKL might have changed
@@ -299,6 +318,26 @@ void TsfMonitor::pollUpdate() {
     // Update candidates and composition from TSF/IMM
     // This is critical for showing candidates in the HUD
     updateCache();
+
+    // FALLBACK: If IMM32 returned 0 candidates but we're in Chinese mode,
+    // try reading candidates from the IME's candidate window directly.
+    // This is needed for TSF IMEs like Microsoft Pinyin that don't use
+    // TSF UIElement callbacks for their candidate list.
+    auto state = ImeStateManager::get().getSnapshot();
+    if (state.inputMethodType != InputMethodType::ENGLISH &&
+        state.inputMethodType != InputMethodType::UNKNOWN &&
+        !state.composition.empty() &&
+        state.candidates.empty()) {
+
+        std::vector<std::wstring> windowCandidates = getCandidatesFromWindowEnumeration();
+        if (!windowCandidates.empty()) {
+            char dbg[128];
+            sprintf_s(dbg, "[ChineseIME] Window enumeration found %d candidates\n",
+                (int)windowCandidates.size());
+            OutputDebugStringA(dbg);
+            ImeStateManager::get().updateCandidates(state.composition, windowCandidates, 0);
+        }
+    }
 }
 
 STDMETHODIMP TsfMonitor::QueryInterface(REFIID riid, void** ppv) {
@@ -378,8 +417,8 @@ STDMETHODIMP TsfMonitor::OnSetFocus(BOOL fForeground) {
 
 STDMETHODIMP TsfMonitor::BeginUIElement(DWORD dwUIElementId, BOOL* pbShow) {
     if (pbShow) *pbShow = TRUE;
-    char buf[128];
-    sprintf_s(buf, "[ChineseIME] BeginUIElement: id=%d\n", dwUIElementId);
+    char buf[256];
+    sprintf_s(buf, "[ChineseIME] BeginUIElement CALLED: id=%d (threadId=%u)\n", dwUIElementId, GetCurrentThreadId());
     OutputDebugStringA(buf);
 
     // Try to get candidates from the UI element when it appears
@@ -419,8 +458,8 @@ STDMETHODIMP TsfMonitor::BeginUIElement(DWORD dwUIElementId, BOOL* pbShow) {
 }
 
 STDMETHODIMP TsfMonitor::UpdateUIElement(DWORD dwUIElementId) {
-    char buf[128];
-    sprintf_s(buf, "[ChineseIME] UpdateUIElement: id=%d\n", dwUIElementId);
+    char buf[256];
+    sprintf_s(buf, "[ChineseIME] UpdateUIElement CALLED: id=%d (threadId=%u)\n", dwUIElementId, GetCurrentThreadId());
     OutputDebugStringA(buf);
 
     // Try to get candidates from the UI element
@@ -612,7 +651,7 @@ void TsfMonitor::updateCache() {
     bool candidatesFound = false;
 
     ITfContext* ctx = getCurrentContext();
-    sprintf_s(dbg, "[ChineseIME] updateCache: TSF ctx=%p\n", ctx);
+    sprintf_s(dbg, "[ChineseIME] updateCache: TSF ctx=%p (STA tid=%u)\n", ctx, GetCurrentThreadId());
     OutputDebugStringA(dbg);
     if (ctx) {
         getCompositionString(ctx, composition);
@@ -623,6 +662,8 @@ void TsfMonitor::updateCache() {
             candidatesFound ? 1 : 0, (int)candidates.size());
         OutputDebugStringA(dbg);
         ctx->Release();
+    } else {
+        OutputDebugStringA("[ChineseIME] updateCache: TSF ctx=NULL, using IMM fallback\n");
     }
 
     if (!candidatesFound) {
@@ -635,19 +676,28 @@ void TsfMonitor::updateCache() {
         sprintf_s(dbg, "[ChineseIME] updateCache: IMM fallback, targetWnd=0x%p\n", targetWnd);
         OutputDebugStringA(dbg);
         if (targetWnd) {
+            // CRITICAL: Attach to the target window's thread BEFORE calling ImmGetContext!
+            DWORD targetThreadId = GetWindowThreadProcessId(targetWnd, nullptr);
+            DWORD staThreadId = GetCurrentThreadId();
+            bool attached = false;
+            if (targetThreadId != staThreadId) {
+                attached = AttachThreadInput(staThreadId, targetThreadId, TRUE) != 0;
+                sprintf_s(dbg, "[ChineseIME] updateCache: AttachThreadInput to targetThreadId=%u, result=%d\n", targetThreadId, attached ? 1 : 0);
+                OutputDebugStringA(dbg);
+            }
+            sprintf_s(dbg, "[ChineseIME] updateCache: calling ImmGetContext(0x%p)\n", targetWnd);
+            OutputDebugStringA(dbg);
             HIMC himc = ImmGetContext(targetWnd);
+            sprintf_s(dbg, "[ChineseIME] updateCache: ImmGetContext returned himc=%p\n", himc);
+            OutputDebugStringA(dbg);
             if (himc) {
-                LONG compLen = ImmGetCompositionString(himc, GCS_COMPSTR, nullptr, 0);
-                if (compLen <= 0) {
-                    compLen = ImmGetCompositionString(himc, GCS_COMPREADSTR, nullptr, 0);
-                }
+                LONG compLen = ImmGetCompositionStringW(himc, GCS_COMPSTR, nullptr, 0);
+                // GCS_COMPREADSTR is raw pinyin — never use it as a fallback.
+                // If GCS_COMPSTR is empty, composition genuinely is empty right now.
                 if (compLen > 0) {
                     int wcharLen = compLen / sizeof(wchar_t);
                     std::vector<wchar_t> compBuf(wcharLen + 1);
-                    LONG actualLen = ImmGetCompositionString(himc, GCS_COMPSTR, compBuf.data(), compLen);
-                    if (actualLen <= 0) {
-                        actualLen = ImmGetCompositionString(himc, GCS_COMPREADSTR, compBuf.data(), compLen);
-                    }
+                    LONG actualLen = ImmGetCompositionStringW(himc, GCS_COMPSTR, compBuf.data(), compLen);
                     if (actualLen > 0) {
                         int actualWcharLen = actualLen / sizeof(wchar_t);
                         compBuf[actualWcharLen] = 0;
@@ -655,19 +705,22 @@ void TsfMonitor::updateCache() {
                     }
                 }
 
-                size_t bufSize = ImmGetCandidateList(himc, 0, nullptr, 0);
+                size_t bufSize = ImmGetCandidateListW(himc, 0, nullptr, 0);
                 if (bufSize > 0) {
                     std::vector<char> candBuf(bufSize);
                     CANDIDATELIST* candList = reinterpret_cast<CANDIDATELIST*>(candBuf.data());
-                    ImmGetCandidateList(himc, 0, candList, bufSize);
-                    DWORD count = candList->dwCount;
-                    selectedIndex = candList->dwSelection;
-                    if (count > 10) count = 10;
-                    for (DWORD j = 0; j < count; j++) {
-                        wchar_t* pStr = (wchar_t*)(candBuf.data() + candList->dwOffset[j]);
-                        candidates.push_back(pStr);
+                    // FIX: Check return value before using candList
+                    DWORD result = ImmGetCandidateListW(himc, 0, candList, bufSize);
+                    if (result > 0) {
+                        DWORD count = candList->dwCount;
+                        selectedIndex = (int)candList->dwSelection;
+                        if (count > 10) count = 10;
+                        for (DWORD j = 0; j < count; j++) {
+                            wchar_t* pStr = (wchar_t*)(candBuf.data() + candList->dwOffset[j]);
+                            candidates.push_back(pStr);
+                        }
+                        candidatesFound = true;
                     }
-                    candidatesFound = true;
                 }
 
                 char debugBuf[512];
@@ -677,14 +730,24 @@ void TsfMonitor::updateCache() {
 
                 ImmReleaseContext(targetWnd, himc);
             }
+            // Detach if we attached
+            if (attached && targetThreadId != staThreadId) {
+                AttachThreadInput(staThreadId, targetThreadId, FALSE);
+            }
         }
     }
 
-    sprintf_s(dbg, "[ChineseIME] updateCache: final candidates cnt=%d, composition='%S'\n", 
+    sprintf_s(dbg, "[ChineseIME] updateCache: final candidates cnt=%d, composition='%S'\n",
         (int)candidates.size(), composition.c_str());
     OutputDebugStringA(dbg);
 
-    mgr.updateCandidates(composition, candidates, selectedIndex);
+    // KEY FIX: Only call updateCandidates when at least one of comp/candidates
+    // is non-empty. Skip when both are empty to avoid wiping the cached state
+    // mid-session (IMM32 can return empty GCS_COMPSTR while candidates are still
+    // active, which would break IsComposing() and desync the Java-side HUD).
+    if (!composition.empty() || !candidates.empty()) {
+        mgr.updateCandidates(composition, candidates, selectedIndex);
+    }
 
     // Use foreground window's thread to get keyboard layout
     // Use the hooked window from WinEventBridge for keyboard layout check
@@ -1078,6 +1141,141 @@ void TsfMonitor::queryCurrentInputMethod() {
             g_lastLoggedType = currentInputMethod_;
         }
     }
+}
+
+// -------------------------------------------------------------------
+// Candidate window enumeration fallback for TSF IMEs that don't use
+// TSF UIElement callbacks. This finds the IME's candidate list window
+// and reads candidates via WM_GETTEXT.
+// -------------------------------------------------------------------
+
+static BOOL CALLBACK EnumCandidateWindowsProc(HWND hwnd, LPARAM lParam) {
+    auto* results = reinterpret_cast<std::vector<std::wstring>*>(lParam);
+
+    wchar_t className[64] = {0};
+    GetClassNameW(hwnd, className, 63);
+
+    // Check for common IME candidate window class names
+    bool isCandidateWindow = false;
+    const wchar_t* classStr = className;
+
+    // Check various IME candidate window class name patterns
+    if (wcsstr(classStr, L"Cicero") != nullptr ||
+        wcsstr(classStr, L"IME") != nullptr ||
+        wcsstr(classStr, L"MSWinCls") != nullptr ||
+        wcsstr(classStr, L"IMJPCnd") != nullptr ||
+        wcsstr(classStr, L"CnCand") != nullptr ||
+        wcsstr(classStr, L"SHGJE") != nullptr ||   // Sogou
+        wcsstr(classStr, L"TTEdit") != nullptr || // Tencent
+        wcsstr(classStr, L"TTF") != nullptr ||     // Tencent
+        wcsstr(classStr, L"QQPY") != nullptr ||   // QQ Pinyin
+        wcsstr(classStr, L"Ba IME") != nullptr ||  // Baidu
+        wcsstr(classStr, L"mscand") != nullptr || // Microsoft
+        wcsstr(classStr, L"CandList") != nullptr ||
+        wcsstr(classStr, L"Conv") != nullptr) {
+        isCandidateWindow = true;
+    }
+
+    if (!isCandidateWindow) return TRUE; // Continue enumeration
+
+    // Check if window is visible and has text
+    if (!IsWindowVisible(hwnd)) return TRUE;
+
+    int textLen = GetWindowTextLengthW(hwnd);
+    if (textLen <= 0) return TRUE;
+
+    std::wstring windowText;
+    windowText.resize(textLen + 1);
+    int actualLen = GetWindowTextW(hwnd, &windowText[0], textLen + 1);
+    if (actualLen <= 0) return TRUE;
+    windowText.resize(actualLen);
+
+    // Check if text contains likely candidate content
+    // (Chinese characters, numbers with dots like "1. 你好", etc.)
+    bool hasCandidateContent = false;
+    for (wchar_t c : windowText) {
+        if (c >= 0x4E00 && c <= 0x9FFF) { // CJK Unified Ideographs
+            hasCandidateContent = true;
+            break;
+        }
+        if ((c >= L'0' && c <= L'9') && !windowText.empty()) {
+            hasCandidateContent = true; // "1. 2. 3." style candidates
+            break;
+        }
+    }
+
+    if (!hasCandidateContent) return TRUE;
+
+    char dbg[256];
+    sprintf_s(dbg, "[ChineseIME] Candidate window found: class=%S, text='%S'\n",
+        classStr, windowText.c_str());
+    OutputDebugStringA(dbg);
+
+    // Parse candidates from the text
+    // Candidates are usually separated by newlines, spaces, or numbers with dots
+    std::wstring current;
+    for (wchar_t c : windowText) {
+        if (c == L'\n' || c == L'\r') {
+            if (!current.empty()) {
+                // Remove leading number+digit patterns like "1.", "2. "
+                size_t dotPos = current.find(L'.');
+                if (dotPos != std::wstring::npos && dotPos < 4) {
+                    current = current.substr(dotPos + 1);
+                }
+                // Trim leading whitespace
+                while (!current.empty() && (current[0] == L' ' || current[0] == L'\t')) {
+                    current = current.substr(1);
+                }
+                // Only add if it looks like Chinese text
+                if (!current.empty()) {
+                    bool hasChinese = false;
+                    for (wchar_t ch : current) {
+                        if (ch >= 0x4E00 && ch <= 0x9FFF) {
+                            hasChinese = true;
+                            break;
+                        }
+                    }
+                    if (hasChinese && current.size() <= 20) {
+                        results->push_back(current);
+                    }
+                }
+                current.clear();
+            }
+        } else {
+            current += c;
+        }
+    }
+
+    // Handle text without newlines (single candidate or concatenated)
+    if (!current.empty() && results->empty()) {
+        size_t dotPos = current.find(L'.');
+        if (dotPos != std::wstring::npos && dotPos < 4) {
+            current = current.substr(dotPos + 1);
+        }
+        while (!current.empty() && (current[0] == L' ' || current[0] == L'\t')) {
+            current = current.substr(1);
+        }
+        if (!current.empty()) {
+            bool hasChinese = false;
+            for (wchar_t ch : current) {
+                if (ch >= 0x4E00 && ch <= 0x9FFF) {
+                    hasChinese = true;
+                    break;
+                }
+            }
+            if (hasChinese && current.size() <= 20) {
+                results->push_back(current);
+            }
+        }
+    }
+
+    return TRUE; // Continue to find more candidate windows
+}
+
+static std::vector<std::wstring> getCandidatesFromWindowEnumeration() {
+    std::vector<std::wstring> candidates;
+    EnumWindows(EnumCandidateWindowsProc, reinterpret_cast<LPARAM>(&candidates));
+    return candidates;
 }
 
 } // namespace chineseime

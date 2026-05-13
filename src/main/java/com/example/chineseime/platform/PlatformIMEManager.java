@@ -63,6 +63,17 @@ public class PlatformIMEManager {
             if (statusIndicator != null) {
                 statusIndicator.update(chineseMode, mode, capsLock, shiftMode);
             }
+
+            // 如果 composition 变空，就强制清除 HUD
+            String composition = NativeImeBridge.getCompositionString();
+            if (composition == null || composition.isEmpty()) {
+                if (!horizontalHud.getInput().isEmpty()) {
+                    horizontalHud.clearInput();
+                }
+                if (!verticalHud.getInput().isEmpty()) {
+                    verticalHud.clearInput();
+                }
+            }
         }
     }
 

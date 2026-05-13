@@ -13,7 +13,7 @@
 #undef max
 #endif
 
-static WNDPROC g_originalWndProc = nullptr;
+// Static state
 static HWND g_targetWindow = nullptr;
 static bool g_callbacksRegistered = false;
 
@@ -66,36 +66,38 @@ void CALLBACK ObjectEventHookCallback(HWINEVENTHOOK hook, DWORD event, HWND hwnd
 // Start WinEvent Hook (called once with static guard)
 static void startWinEventHook() {
     if (g_winEventHook) return;
-    
-    // Hook into all desktop processes for window focus changes
-    // EVENT_SYSTEM_FOREGROUND = 0x0005, EVENT_SYSTEM_SWITCHEND = 0x0017
-    // This covers system-level focus and window switch events
+
+    // CRITICAL: Only monitor THIS process, not all processes!
+    // Using process ID 0 hooks ALL processes, which breaks other apps' IME.
+    DWORD currentProcessId = GetCurrentProcessId();
+
+    // Hook only this process for foreground changes
     g_winEventHook = SetWinEventHook(
         EVENT_SYSTEM_FOREGROUND,
-        EVENT_SYSTEM_SWITCHEND,
-        nullptr, // hook in all processes
+        EVENT_SYSTEM_FOREGROUND,
+        nullptr, // dll
         WinEventHookCallback,
-        0, // all processes
-        0, // all threads
-        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+        currentProcessId, // ONLY this process
+        0, // all threads in process
+        WINEVENT_OUTOFCONTEXT);
 
-    // Also hook object events for focus changes (EVENT_OBJECT_FOCUS = 0x8005)
+    // Hook for focus changes (only this process)
     g_objectEventHook = SetWinEventHook(
         EVENT_OBJECT_FOCUS,
         EVENT_OBJECT_FOCUS,
-        nullptr, // hook in all processes
+        nullptr,
         ObjectEventHookCallback,
-        0, // all processes
-        0, // all threads
-        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+        currentProcessId,
+        0,
+        WINEVENT_OUTOFCONTEXT);
 
     if (g_winEventHook) {
-        OutputDebugStringA("[ChineseIME] WinEventHook: started successfully\n");
+        OutputDebugStringA("[ChineseIME] WinEventHook: started (process-local only)\n");
     } else {
         OutputDebugStringA("[ChineseIME] WinEventHook: FAILED to start\n");
     }
     if (g_objectEventHook) {
-        OutputDebugStringA("[ChineseIME] ObjectEventHook: started successfully\n");
+        OutputDebugStringA("[ChineseIME] ObjectEventHook: started (process-local only)\n");
     } else {
         OutputDebugStringA("[ChineseIME] ObjectEventHook: FAILED to start\n");
     }
@@ -133,45 +135,29 @@ void WinEventBridge::setCallbacks(EventCallbacks&& callbacks) {
 }
 
 void WinEventBridge::hookWindow(HWND hwnd) {
-    // Start WinEvent Hook once (static guard ensures it runs only once)
-    static bool hookInitialized = []() {
-        startWinEventHook();
-        return true;
-    }();
-    (void)hookInitialized; // suppress unused variable warning
-
-    if (hooked_ && targetWindow_ == hwnd) {
-        return;
-    }
-
-    if (hooked_ && g_targetWindow && g_originalWndProc) {
-        SetWindowLongPtr(g_targetWindow, GWLP_WNDPROC, (LONG_PTR)g_originalWndProc);
-        g_originalWndProc = nullptr;
-    }
+    // CRITICAL: DO NOT replace the game's WndProc!
+    // Replacing WndProc breaks IME for all applications, including system-wide.
+    // 
+    // For TSF IMEs (Microsoft Pinyin, Wubi), the TSF UIElementProvider handles
+    // all IME event monitoring. No WndProc hook needed.
+    //
+    // For legacy IMM32 IMEs, we can detect them but they are rare now.
+    // If needed, we can add a separate non-invasive monitoring approach.
 
     targetWindow_ = hwnd;
     g_targetWindow = hwnd;
-    if (hwnd) {
-        g_originalWndProc = (WNDPROC)GetWindowLongPtr(hwnd, GWLP_WNDPROC);
-        SetWindowLongPtr(hwnd, GWLP_WNDPROC, (LONG_PTR)ImeWndProc);
-        hooked_ = true;
-        char dbg[128];
-        sprintf_s(dbg, "[ChineseIME] WinEventBridge: hooked HWND 0x%p\n", (void*)hwnd);
-        OutputDebugStringA(dbg);
-    } else {
-        hooked_ = false;
-    }
+    hooked_ = true;  // Mark as "active" but don't actually hook WndProc
+
+    char dbg[128];
+    sprintf_s(dbg, "[ChineseIME] WinEventBridge: registered HWND 0x%p (WndProc NOT hooked - using TSF instead)\n", (void*)hwnd);
+    OutputDebugStringA(dbg);
 }
 
 void WinEventBridge::unhookWindow() {
-    if (hooked_ && g_targetWindow && g_originalWndProc) {
-        SetWindowLongPtr(g_targetWindow, GWLP_WNDPROC, (LONG_PTR)g_originalWndProc);
-        g_originalWndProc = nullptr;
-        hooked_ = false;
-        targetWindow_ = nullptr;
-        g_targetWindow = nullptr;
-        OutputDebugStringA("[ChineseIME] WinEventBridge: unhooked\n");
-    }
+    targetWindow_ = nullptr;
+    g_targetWindow = nullptr;
+    hooked_ = false;
+    OutputDebugStringA("[ChineseIME] WinEventBridge: unregistered\n");
     stopWinEventHook();
 }
 
@@ -247,7 +233,13 @@ void WinEventBridge::readCompositionCursor(HIMC himc) {
 }
 
 void WinEventBridge::readCandidates(HIMC himc) {
+    char dbg[256];
+    sprintf_s(dbg, "[ChineseIME] readCandidates: called with lastComposition_='%S'\n", lastComposition_.c_str());
+    OutputDebugStringA(dbg);
+
     DWORD bufSize = ImmGetCandidateListW(himc, 0, nullptr, 0);
+    sprintf_s(dbg, "[ChineseIME] readCandidates: bufSize=%u\n", bufSize);
+    OutputDebugStringA(dbg);
 
     if (bufSize > 0) {
         std::vector<char> buf(bufSize);
@@ -278,6 +270,14 @@ void WinEventBridge::readCandidates(HIMC himc) {
         }
 
         ImeStateManager::get().updateCandidates(lastComposition_, lastCandidates_, lastSelectedIndex_);
+        // Verify the update
+        {
+            char dbg[256];
+            auto state = ImeStateManager::get().getSnapshot();
+            sprintf_s(dbg, "[ChineseIME] readCandidates: UPDATED ImeStateManager, composition='%S', candidates=%d\n",
+                state.composition.c_str(), (int)state.candidates.size());
+            OutputDebugStringA(dbg);
+        }
     } else {
         // Fallback to TSF cached candidates
         auto state = ImeStateManager::get().getSnapshot();
@@ -313,12 +313,22 @@ static bool containsChinese(const wchar_t* str) {
 
 void WinEventBridge::processImeComposition(HWND hwnd, LPARAM lParam) {
     HIMC himc = ImmGetContext(hwnd);
-    if (!himc) return;
+    if (!himc) {
+        OutputDebugStringA("[ChineseIME] processImeComposition: IMM context is null!\n");
+        return;
+    }
 
     // Only process messages that have composition or result data
     // Ignore messages that only have cursor position or other flags
     bool hasCompStr = (lParam & GCS_COMPSTR) != 0;
     bool hasResultStr = (lParam & GCS_RESULTSTR) != 0;
+    bool hasCompRead = (lParam & GCS_COMPREADSTR) != 0;
+
+    // Debug logging
+    char dbg[256];
+    sprintf_s(dbg, "[ChineseIME] processImeComposition: hasComp=%d, hasResult=%d, hasCompRead=%d, lParam=0x%lX\n",
+        hasCompStr ? 1 : 0, hasResultStr ? 1 : 0, hasCompRead ? 1 : 0, lParam);
+    OutputDebugStringA(dbg);
 
     if (hasCompStr) {
         readComposition(himc, lParam);
@@ -327,6 +337,10 @@ void WinEventBridge::processImeComposition(HWND hwnd, LPARAM lParam) {
     if (lParam & GCS_CURSORPOS) {
         readCompositionCursor(himc);
     }
+
+    sprintf_s(dbg, "[ChineseIME] processImeComposition: lastComposition_='%S', after read, size=%d\n",
+        lastComposition_.c_str(), (int)lastComposition_.size());
+    OutputDebugStringA(dbg);
 
     if (hasCompStr && !lastComposition_.empty()) {
         readCandidates(himc);
@@ -412,93 +426,6 @@ void WinEventBridge::processImeNotify(WPARAM wParam, LPARAM) {
             }
         }
     }
-}
-
-LRESULT CALLBACK WinEventBridge::ImeWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    auto& bridge = WinEventBridge::get();
-
-    // Track IME composition state
-    static bool inComposition = false;
-
-    // Log all IME-related messages
-    if (msg >= WM_IME_STARTCOMPOSITION && msg <= WM_IME_KEYLAST) {
-        char dbg[128];
-        const char* msgName = "?";
-        if (msg == WM_IME_STARTCOMPOSITION) { msgName = "STARTCOMP"; inComposition = true; }
-        else if (msg == WM_IME_COMPOSITION) msgName = "COMP";
-        else if (msg == WM_IME_ENDCOMPOSITION) { msgName = "ENDCOMP"; inComposition = false; }
-        else if (msg == WM_IME_NOTIFY) msgName = "NOTIFY";
-        else if (msg == WM_IME_SETCONTEXT) msgName = "SETCTX";
-        else if (msg == WM_INPUTLANGCHANGE) msgName = "INPUTLANG";
-        sprintf_s(dbg, "[ChineseIME] ImeWndProc: hwnd=0x%p msg=%s(0x%04X) wp=0x%llX lp=0x%llX\n",
-            (void*)hWnd, msgName, msg, (unsigned long long)wParam, (unsigned long long)lParam);
-        OutputDebugStringA(dbg);
-    }
-
-    switch (msg) {
-        case WM_IME_STARTCOMPOSITION: {
-            inComposition = true;
-            bridge.processImeEndComposition(hWnd);
-            break;
-        }
-
-        case WM_IME_COMPOSITION: {
-            bridge.processImeComposition(hWnd, lParam);
-            break;
-        }
-
-        case WM_IME_ENDCOMPOSITION: {
-            inComposition = false;
-            bridge.processImeEndComposition(hWnd);
-            break;
-        }
-
-        case WM_IME_NOTIFY: {
-            bridge.processImeNotify(wParam, lParam);
-            break;
-        }
-
-        case WM_IME_SETCONTEXT:
-        case WM_INPUTLANGCHANGE:
-            break;
-
-        // Block WM_CHAR messages during IME composition to prevent raw characters from being sent
-        case WM_CHAR: {
-            if (inComposition) {
-                // IME is composing - block WM_CHAR to prevent duplicate characters
-                // The final character will come from WM_IME_COMPOSITION with GCS_RESULTSTR
-                char dbg[128];
-                sprintf_s(dbg, "[ChineseIME] ImeWndProc: BLOCKED WM_CHAR (0x%02X) during composition\n", (unsigned)wParam);
-                OutputDebugStringA(dbg);
-                return 0; // Block the message
-            }
-            break;
-        }
-
-        // Block certain key down events during composition
-        case WM_KEYDOWN: {
-            if (inComposition) {
-                // During composition, most keys should not be sent to the game
-                // The exception might be certain control keys, but for now block letter keys
-                UINT vk = (UINT)wParam;
-                // Block alphanumeric keys and some punctuation during composition
-                if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) {
-                    char dbg[128];
-                    sprintf_s(dbg, "[ChineseIME] ImeWndProc: BLOCKED WM_KEYDOWN (vk=0x%02X) during composition\n", vk);
-                    OutputDebugStringA(dbg);
-                    return 0; // Block the message
-                }
-                // Allow control keys through (Enter, Backspace, Escape, etc.)
-                // But for now, let them through for proper IME handling
-            }
-            break;
-        }
-    }
-
-    if (g_originalWndProc) {
-        return CallWindowProc(g_originalWndProc, hWnd, msg, wParam, lParam);
-    }
-    return DefWindowProc(hWnd, msg, wParam, lParam);
 }
 
 } // namespace chineseime

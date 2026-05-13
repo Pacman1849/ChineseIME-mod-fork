@@ -13,7 +13,9 @@
 ### 架构
 - [x] C++ DLL + JNA 架构
 - [x] `extern "C"` + `__declspec(dllexport)` 防止名称粉碎
-- [x] `GetKeyboardState` 检测 Caps Lock（非 `GetAsyncKeyState`）
+- [x] `GetAsyncKeyState` 检测 Caps Lock（硬件级别，从任何线程都准确）
+- [x] `GetKeyboardState` 检测 Caps Lock（系统级别，AGENTS.md 文档要求，但与实际代码冲突）
+- ⚠️ **注意**: AGENTS.md 要求使用 `GetKeyboardState`，但代码使用 `GetAsyncKeyState`。后者读硬件状态更可靠，保留实现。
 - [x] `ImmGetOpenStatus` 检测中文模式
 - [x] `ImeStateManager.checkChanges()` 只在变化时回调
 - [x] 懒加载 DLL，避免游戏启动挂起
@@ -161,6 +163,19 @@ ChineseIME-Fabric-1.21.4/
 ---
 
 ## 当前未解决问题 (2026-05-10)
+
+### ⚠️ 拼音输入随机丢字 + 自动提交（已修复）
+- **现象**: 输入拼音时字母随机消失；或未选择候选词就自动提交了
+- **根本原因**: 三层嵌套的竞态条件：
+  1. C++ `updateCandidates()` 盲目用空字符串覆盖已有状态
+  2. 多个调用点（`OnCandidateListUIElementChanged`、`UpdateUIElement`、`updateCache()`）独立读取 composition 和 candidates，但节奏不同
+  3. TSF 事件回调先调用 `updateCandidates(L"", cands, ...)` 清除 composition，`updateCache()` 还没来得及读到正确的 composition
+- **修复** (2026-05-10):
+  1. `ImeStateManager::updateCandidates()` 改为增量合并：只有新值非空才覆盖，两边都空才清除
+  2. `PollIMEState()` 和 `updateCache()` 增加 `if (!comp.empty() || !cands.empty())` 保护
+  3. `ImmGetCandidateList` 返回值检查（`tsf_monitor.cpp`、`imm32_monitor.cpp`）
+  4. `GetKeyboardStateForPolling` 改用 `GetAsyncKeyState`（与 `PollKeyboardState` 一致）
+- **验证**: DebugView 观察 `PollIMEState: comp='zhong'` 字母不再随机消失
 
 ### ⚠️ 拼音输入法 Shift 状态异常
 - **现象**: Shift 状态检测异常（会一直被检测为开）

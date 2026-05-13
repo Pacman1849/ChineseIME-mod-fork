@@ -149,14 +149,28 @@ void ImeStateManager::updateComposition(const std::wstring& comp) {
 
 void ImeStateManager::updateCandidates(const std::wstring& comp, const std::vector<std::wstring>& cands, int selectedIndex) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (state_.composition != comp) {
-        state_.composition = comp;
-        changes_.compositionChanged = true;
+
+    // KEY FIX: Incremental merge — don't blindly overwrite with empty strings.
+    // Multiple callers (OnCandidateListUIElementChanged, UpdateUIElement,
+    // updateCache) independently read composition and candidates from IMM32/TSF.
+    // They may pass L"" for comp when they only have candidates available,
+    // which would wipe a valid composition cached from a prior read.
+    //
+    // Rule: only update a field if the new value is non-empty, OR if BOTH
+    // comp AND cands are empty (meaning the IME session is genuinely ending).
+    // This preserves cached composition/candidates across partial reads.
+    if (!comp.empty() || cands.empty()) {
+        if (state_.composition != comp) {
+            state_.composition = comp;
+            changes_.compositionChanged = true;
+        }
     }
-    if (state_.candidates != cands || state_.selectedIndex != selectedIndex) {
-        state_.candidates = cands;
-        state_.selectedIndex = selectedIndex;
-        changes_.candidatesChanged = true;
+    if (!cands.empty() || comp.empty()) {
+        if (state_.candidates != cands || state_.selectedIndex != selectedIndex) {
+            state_.candidates = cands;
+            state_.selectedIndex = selectedIndex;
+            changes_.candidatesChanged = true;
+        }
     }
 }
 

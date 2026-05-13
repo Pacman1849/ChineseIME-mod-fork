@@ -105,19 +105,43 @@ void PollIMEState() {
     if (!fgWnd) fgWnd = GetActiveWindow();
     if (!fgWnd) return;
 
+    // CRITICAL: Attach to the target window's thread BEFORE calling ImmGetContext!
+    DWORD fgThreadId = GetWindowThreadProcessId(fgWnd, nullptr);
+    DWORD pollThreadId = GetCurrentThreadId();
+    bool attached = false;
+    if (fgThreadId != pollThreadId) {
+        attached = AttachThreadInput(pollThreadId, fgThreadId, TRUE) != 0;
+        char dbg[128];
+        sprintf_s(dbg, "[ChineseIME] PollIMEState: AttachThreadInput to fgThreadId=%u, result=%d\n", fgThreadId, attached ? 1 : 0);
+        OutputDebugStringA(dbg);
+    }
+
+    // Now safe to call ImmGetContext
     HIMC himc = ImmGetContext(fgWnd);
     if (!himc) {
         HWND testWnd = chineseime::WinEventBridge::GetWinEventTargetWindow();
         if (!testWnd) testWnd = GetForegroundWindow();
         if (testWnd && testWnd != fgWnd) {
+            // Also attach to this window's thread
+            DWORD testThreadId = GetWindowThreadProcessId(testWnd, nullptr);
+            if (testThreadId != pollThreadId) {
+                AttachThreadInput(pollThreadId, testThreadId, TRUE);
+            }
             HIMC testHimc = ImmGetContext(testWnd);
             if (testHimc) {
                 himc = testHimc;
                 fgWnd = testWnd;
+                fgThreadId = testThreadId;
             }
         }
     }
-    if (!himc) return;
+    if (!himc) {
+        // Detach if we attached
+        if (attached && fgThreadId != pollThreadId) {
+            AttachThreadInput(pollThreadId, fgThreadId, FALSE);
+        }
+        return;
+    }
 
     bool imeOpen = ImmGetOpenStatus(himc) != 0;
     mgr.updateImeOpen(imeOpen);
@@ -132,12 +156,6 @@ void PollIMEState() {
         chineseMode = false;
     }
     mgr.updateChineseMode(chineseMode);
-
-    DWORD fgThreadId = GetWindowThreadProcessId(fgWnd, nullptr);
-    DWORD pollThreadId = GetCurrentThreadId();
-    if (fgThreadId != pollThreadId) {
-        AttachThreadInput(pollThreadId, fgThreadId, TRUE);
-    }
 
     // Use fgThreadId to get the keyboard layout of the foreground window's thread
     HKL hkl = GetKeyboardLayout(fgThreadId);
@@ -209,25 +227,22 @@ void PollIMEState() {
         OutputDebugStringA("[ChineseIME] PollIME: hkl is NULL\n");
     }
 
-    // Detach thread input
-    DWORD detachingThreadId = GetCurrentThreadId();
-    if (fgThreadId != detachingThreadId) {
-        AttachThreadInput(detachingThreadId, fgThreadId, FALSE);
-    }
+    // Keep thread attached during IMM32 reads!
+    // Detach AFTER reading all IME data.
 
-    // Read composition and candidates
+    // Read composition and candidates — BOTH must be read before deciding what to update.
+    // Reading them sequentially causes a race: composition could be empty mid-frame while
+    // candidates are still active, wiping the cached composition and breaking IsComposing().
+    //
+    // GCS_COMPSTR gives the converted (Chinese) composition string.
+    // We no longer fall back to GCS_COMPREADSTR — that returns raw pinyin which should
+    // never appear as a composition (it would bypass the containsChinese filter).
     std::wstring composition;
-    LONG compLen = ImmGetCompositionString(himc, GCS_COMPSTR, nullptr, 0);
-    if (compLen <= 0) {
-        compLen = ImmGetCompositionString(himc, GCS_COMPREADSTR, nullptr, 0);
-    }
+    LONG compLen = ImmGetCompositionStringW(himc, GCS_COMPSTR, nullptr, 0);
     if (compLen > 0) {
         int wcharLen = compLen / sizeof(wchar_t);
         std::vector<wchar_t> compBuf(wcharLen + 1);
-        LONG actualLen = ImmGetCompositionString(himc, GCS_COMPSTR, compBuf.data(), compLen);
-        if (actualLen <= 0) {
-            actualLen = ImmGetCompositionString(himc, GCS_COMPREADSTR, compBuf.data(), compLen);
-        }
+        LONG actualLen = ImmGetCompositionStringW(himc, GCS_COMPSTR, compBuf.data(), compLen);
         if (actualLen > 0) {
             int actualWcharLen = actualLen / sizeof(wchar_t);
             compBuf[actualWcharLen] = 0;
@@ -254,11 +269,25 @@ void PollIMEState() {
         }
     }
 
+    // KEY FIX: Only update if at least one of comp/candidates is non-empty.
+    // If both are empty, skip this update entirely — don't wipe the cached state.
+    // An empty-poll means the IME session might not have updated yet; the previous
+    // cached values (from a prior frame) are still valid until we confirm they're gone.
     if (!composition.empty() || !candidates.empty()) {
         mgr.updateCandidates(composition, candidates, selectedIndex);
     }
 
+    char dbg2[256];
+    sprintf_s(dbg2, "[ChineseIME] PollIMEState: comp='%S', candCnt=%d, open=%d\n",
+        composition.c_str(), (int)candidates.size(), imeOpen ? 1 : 0);
+    OutputDebugStringA(dbg2);
+
     ImmReleaseContext(fgWnd, himc);
+
+    // Now detach AFTER all IME reads are complete
+    if (attached && fgThreadId != pollThreadId) {
+        AttachThreadInput(pollThreadId, fgThreadId, FALSE);
+    }
 }
 
 } // anonymous namespace
@@ -527,11 +556,11 @@ __declspec(dllexport) int GetCapsLockState(void) {
 }
 
 __declspec(dllexport) int GetKeyboardStateForPolling(int vKey) {
-    BYTE keyboardState[256];
-    if (GetKeyboardState(keyboardState)) {
-        return (keyboardState[vKey] & 0x80) ? 1 : 0;
-    }
-    return 0;
+    // KEY FIX: Use GetAsyncKeyState (same as PollKeyboardState) instead of
+    // GetKeyboardState. GetKeyboardState reads the thread's keyboard state table
+    // which may be stale/desynced when called from the Java game thread.
+    // GetAsyncKeyState reads the hardware keyboard state and works from any thread.
+    return (GetAsyncKeyState(vKey) & 0x8000) ? 1 : 0;
 }
 
 __declspec(dllexport) void SetTargetWindow(void* hwnd) {
@@ -552,14 +581,22 @@ __declspec(dllexport) void FreeBuffer(void* ptr) {
     if (ptr) CoTaskMemFree(ptr);
 }
 
-__declspec(dllexport) const char* GetDllVersion(void) {
-    return VERSION;
+__declspec(dllexport) const wchar_t* GetDllVersion(void) {
+    return L"2.5.0";
 }
 
 __declspec(dllexport) int IsComposing(void) {
     // Check if there's a non-empty composition string
     auto state = chineseime::ImeStateManager::get().getSnapshot();
-    return !state.composition.empty() ? 1 : 0;
+    bool composing = !state.composition.empty();
+
+    // Debug logging (will show in DebugView)
+    char dbg[256];
+    sprintf_s(dbg, "[ChineseIME] IsComposing: composing=%d, composition='%S', candidates=%d\n",
+        composing ? 1 : 0, state.composition.c_str(), (int)state.candidates.size());
+    OutputDebugStringA(dbg);
+
+    return composing ? 1 : 0;
 }
 
 __declspec(dllexport) int HasLayoutChanged(void) {

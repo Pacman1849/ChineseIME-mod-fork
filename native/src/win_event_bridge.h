@@ -48,7 +48,8 @@ private:
     void processImeEndComposition(HWND hwnd);
     void processImeNotify(WPARAM wParam, LPARAM lParam);
 
-    static LRESULT CALLBACK ImeWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    // Note: ImeWndProc removed - we no longer hook the window's WndProc
+    // Instead, we rely on TSF UIElementProvider for IME state monitoring
 
     EventCallbacks callbacks_;
     HWND targetWindow_ = nullptr;

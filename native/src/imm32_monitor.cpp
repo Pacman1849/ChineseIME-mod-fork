@@ -131,7 +131,11 @@ void Imm32Monitor::processCandidate(HWND hwnd, HIMC himc) {
     if (bufSize > 0) {
         std::vector<char> candBuf(bufSize);
         CANDIDATELIST* candList = reinterpret_cast<CANDIDATELIST*>(candBuf.data());
-        ImmGetCandidateList(himc, 0, candList, bufSize);
+        // KEY FIX: Check the return value of ImmGetCandidateList. If it fails,
+        // candList->dwCount is garbage — do not use it.
+        if (ImmGetCandidateList(himc, 0, candList, bufSize) == 0) {
+            return;
+        }
         DWORD count = candList->dwCount;
         selectedIndex = candList->dwSelection;
         if (count > 10) count = 10;

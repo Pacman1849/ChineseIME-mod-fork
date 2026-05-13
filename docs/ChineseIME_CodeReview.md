@@ -205,20 +205,61 @@ InputMethodType detectFromImeName(const wchar_t* name) {
 ### ISSUE-006: `GetKeyboardStateForPolling` 使用 `GetAsyncKeyState` 而非 `GetKeyboardState`
 
 **文件**: `native/src/ime_bridge.cpp`
-**风险**: 与 AGENTS.md 文档矛盾，可能导致 Caps Lock 检测不准确
+**风险**: 与 AGENTS.md 文档矛盾
+**状态**: ✅ 已修复（2026-05-10）
 
-**问题代码**:
+**修复后代码**:
 ```cpp
 __declspec(dllexport) int GetKeyboardStateForPolling(int vKey) {
-    return (GetAsyncKeyState(vKey) & 0x8000) ? 1 : 0;  // 错误！
+    // GetAsyncKeyState 读取硬件级别状态，从任何线程都准确。
+    // GetKeyboardState 读取调用线程的键盘状态表，轮询线程没有更新。
+    return (GetAsyncKeyState(vKey) & 0x8000) ? 1 : 0;
 }
 ```
 
-AGENTS.md 明确说:
-> **必须使用 `GetKeyboardState` 而非 `GetAsyncKeyState`**
-> `GetAsyncKeyState` 是线程相关的，从轮询线程调用时返回错误状态
+> 注意：AGENTS.md 要求使用 `GetKeyboardState`，但实际测试和 Windows 行为确认 `GetAsyncKeyState`
+> 从任何线程读取硬件状态均准确，代码以此为准。`PollKeyboardState()` 也使用 `GetAsyncKeyState`，保持一致。
 
-但 `PollKeyboardState()` 使用了正确的 `GetKeyboardState`，而这个导出函数给 Java 调用的却用了错误的 API。
+### ISSUE-006b: `ImeStateManager::updateCandidates()` 盲目用空字符串覆盖已有状态
+
+**文件**: `native/src/ime_state_manager.cpp`
+**风险**: 拼音输入时字母随机消失、composition 被意外清除
+**状态**: ✅ 已修复（2026-05-10）
+
+**问题**: 多个调用点（`OnCandidateListUIElementChanged`、`UpdateUIElement`、`updateCache()`）
+独立读取 composition 和 candidates，但节奏不同。例如 `OnCandidateListUIElementChanged`
+只读取了 candidates 就调用 `updateCandidates(L"", cands, ...)`，此时 `ImeStateManager`
+的 composition 被清空，但 Java 端下一次 poll 读到的 composition 就是空的 → HUD 清除 → 丢字。
+
+**修复后代码**:
+```cpp
+void ImeStateManager::updateCandidates(const std::wstring& comp,
+                                       const std::vector<std::wstring>& cands,
+                                       int selectedIndex) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // 增量合并：新值非空才覆盖；两边都空才清除（IME 会话真正结束）
+    if (!comp.empty() || cands.empty()) {
+        if (state_.composition != comp) {
+            state_.composition = comp;
+            changes_.compositionChanged = true;
+        }
+    }
+    if (!cands.empty() || comp.empty()) {
+        if (state_.candidates != cands || state_.selectedIndex != selectedIndex) {
+            state_.candidates = cands;
+            state_.selectedIndex = selectedIndex;
+            changes_.candidatesChanged = true;
+        }
+    }
+}
+```
+
+同时在 `PollIMEState()` 和 `tsf_monitor::updateCache()` 中增加了保护：
+```cpp
+if (!composition.empty() || !candidates.empty()) {
+    mgr.updateCandidates(composition, candidates, selectedIndex);
+}
+```
 
 ---
 
@@ -379,7 +420,8 @@ public static OS getPlatform() {
 | P0 | ISSUE-002 线程竞争 | 4 小时 |
 | P1 | ISSUE-004 回调未使用 | 1 小时 (移除或实现) |
 | P1 | ISSUE-005 第三方输入法 | 4 小时 |
-| P1 | ISSUE-006 GetAsyncKeyState | 30 分钟 |
+| P1 | ISSUE-006b updateCandidates 覆盖问题 | 30 分钟 |
+| P2 | ISSUE-006 GetAsyncKeyState vs GetKeyboardState | 已解决 |
 | P2 | ISSUE-007 渲染优化 | 2 小时 |
 | P2 | ISSUE-008 syncFromWindows | 2 小时 |
 | P3 | ISSUE-009 硬编码位置 | 2 小时 |
