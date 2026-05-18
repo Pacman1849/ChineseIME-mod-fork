@@ -7,226 +7,170 @@ import com.example.chineseime.engine.PinyinDictionary;
 import com.example.chineseime.hud.CandidateHud;
 import com.example.chineseime.hud.ImeStatusIndicator;
 import com.example.chineseime.hud.VerticalCandidateHud;
-import com.example.chineseime.platform.win32.NativeImeBridge;
-import com.example.chineseime.platform.win32.WindowsIMEEventBridge;
-import net.minecraft.client.gui.DrawContext;
+import com.example.chineseime.platform.win32.WindowsIMEBridgeNative;
 import java.util.List;
 
 public class PlatformIMEManager {
     private final ModConfig config;
-    private final CandidateHud horizontalHud;
+    private final CandidateHud hud;
     private final VerticalCandidateHud verticalHud;
-    private final ImeStatusIndicator statusIndicator;
-    private WindowsIMEEventBridge eventBridge;
+    private WindowsIMEBridgeNative windowsBridge;
     private boolean syncEnabled = false;
 
-    public PlatformIMEManager(ModConfig config, CandidateHud horizontalHud, VerticalCandidateHud verticalHud, ImeStatusIndicator indicator, long windowHandle) {
+    public PlatformIMEManager(ModConfig config, CandidateHud hud, ImeStatusIndicator indicator) {
         this.config = config;
-        this.horizontalHud = horizontalHud;
-        this.verticalHud = verticalHud;
-        this.statusIndicator = indicator;
+        this.hud = hud;
+        this.verticalHud = new VerticalCandidateHud();
 
         if (getPlatform() == OS.WINDOWS) {
-            initWindowsIME(indicator, windowHandle);
+            initWindowsIME(indicator);
         }
     }
 
-    private void initWindowsIME(ImeStatusIndicator indicator, long windowHandle) {
-        try {
-            ChineseIMEInitializer.LOGGER.info("[ChineseIME] Initializing Windows IME Event Bridge");
-            eventBridge = new WindowsIMEEventBridge(horizontalHud, verticalHud, indicator);
-            eventBridge.initialize(windowHandle);
+private void initWindowsIME(ImeStatusIndicator indicator) {
+    try {
+        ChineseIMEInitializer.LOGGER.info("[ChineseIME] Initializing Windows IME Bridge");
+        windowsBridge = new WindowsIMEBridgeNative(hud, verticalHud);
+        windowsBridge.setStatusIndicator(indicator);
+        if (windowsBridge.initialize()) {
+            syncEnabled = true;
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] Windows IME Bridge initialized, syncEnabled=true");
+        } else {
+            ChineseIMEInitializer.LOGGER.warn("[ChineseIME] Windows IME Bridge initialize() returned false, syncEnabled=false");
+        }
+    } catch (Throwable e) {
+        ChineseIMEInitializer.LOGGER.warn("[ChineseIME] Failed to initialize Windows IME Bridge: {}", e.getMessage());
+        e.printStackTrace();
+        syncEnabled = false;
+    }
+}
 
-            if (eventBridge.isHooked()) {
-                syncEnabled = true;
-                ChineseIMEInitializer.LOGGER.info("[ChineseIME] Windows IME Event Bridge initialized, syncEnabled=true");
+public void tick() {
+        if (windowsBridge != null && syncEnabled) {
+            windowsBridge.update();
+        }
+    }
+
+    public void renderHud(Object drawContext) {
+        if (drawContext instanceof net.minecraft.client.gui.DrawContext ctx) {
+            InputMode mode = getDetectedInputMode();
+            if (mode == InputMode.CANGJIE || mode == InputMode.SUCHENG || mode == InputMode.ZHUYIN) {
+                verticalHud.render(ctx);
             } else {
-                ChineseIMEInitializer.LOGGER.warn("[ChineseIME] Windows IME Event Bridge hook failed, syncEnabled=false");
-            }
-        } catch (Throwable e) {
-            ChineseIMEInitializer.LOGGER.warn("[ChineseIME] Failed to initialize Windows IME Bridge: {}", e.getMessage());
-            e.printStackTrace();
-            syncEnabled = false;
-        }
-    }
-
-    public void tick() {
-        if (eventBridge != null && syncEnabled) {
-            NativeImeBridge.refreshImeState();
-            eventBridge.updateFromNativeState();
-
-            InputMode mode = eventBridge.getDetectedInputMode();
-            boolean chineseMode = eventBridge.isChineseMode();
-            boolean capsLock = eventBridge.isCapsLockOn();
-            boolean shiftMode = eventBridge.isInShiftMode();
-
-            if (statusIndicator != null) {
-                statusIndicator.update(chineseMode, mode, capsLock, shiftMode);
-            }
-
-            // 如果 composition 变空，就强制清除 HUD
-            String composition = NativeImeBridge.getCompositionString();
-            if (composition == null || composition.isEmpty()) {
-                if (!horizontalHud.getInput().isEmpty()) {
-                    horizontalHud.clearInput();
-                }
-                if (!verticalHud.getInput().isEmpty()) {
-                    verticalHud.clearInput();
-                }
+                hud.render(ctx);
             }
         }
     }
 
-    public boolean isChineseMode() {
-        if (eventBridge != null && syncEnabled) {
-            return eventBridge.isChineseMode();
-        }
-        return config.isChineseMode();
-    }
-
-    public void toggleChineseMode() {
-        config.toggleChineseMode();
-        horizontalHud.clearInput();
-        verticalHud.clearInput();
-    }
-
-    public InputMode getDetectedInputMode() {
-        if (eventBridge != null && syncEnabled) {
-            return eventBridge.getDetectedInputMode();
-        }
-        return config.getInputMode();
-    }
-
-    public boolean isImeOpen() {
-        if (eventBridge != null && syncEnabled) {
-            return eventBridge.isImeOpen();
-        }
-        return false;
-    }
-
-    public boolean isCapsLockOn() {
-        if (eventBridge != null && syncEnabled) {
-            return eventBridge.isCapsLockOn();
-        }
-        return false;
-    }
-
-    public boolean isInShiftMode() {
-        if (eventBridge != null && syncEnabled) {
-            return eventBridge.isInShiftMode();
-        }
-        return false;
-    }
-
-    public boolean hasInput() {
-        return horizontalHud.isVisible() || verticalHud.isVisible();
-    }
-
-    public void clearInput() {
-        horizontalHud.clearInput();
-        verticalHud.clearInput();
-    }
-
-    public void selectPrev() {
+    public boolean isVerticalLayout() {
         InputMode mode = getDetectedInputMode();
-        boolean useVertical = (mode == InputMode.CANGJIE || mode == InputMode.ZHUYIN || mode == InputMode.SUCHENG);
-
-        if (useVertical) {
-            verticalHud.selectPrevious();
-        } else {
-            horizontalHud.selectPrevious();
-        }
-    }
-
-    public void selectNext() {
-        InputMode mode = getDetectedInputMode();
-        boolean useVertical = (mode == InputMode.CANGJIE || mode == InputMode.ZHUYIN || mode == InputMode.SUCHENG);
-
-        if (useVertical) {
-            verticalHud.selectNext();
-        } else {
-            horizontalHud.selectNext();
-        }
-    }
-
-    public void prevPage() {
-        InputMode mode = getDetectedInputMode();
-        boolean useVertical = (mode == InputMode.CANGJIE || mode == InputMode.ZHUYIN || mode == InputMode.SUCHENG);
-
-        if (useVertical) {
-            verticalHud.prevPage();
-        } else {
-            horizontalHud.prevPage();
-        }
-    }
-
-    public void nextPage() {
-        InputMode mode = getDetectedInputMode();
-        boolean useVertical = (mode == InputMode.CANGJIE || mode == InputMode.ZHUYIN || mode == InputMode.SUCHENG);
-
-        if (useVertical) {
-            verticalHud.nextPage();
-        } else {
-            horizontalHud.nextPage();
-        }
-    }
-
-    public String confirmSelection() {
-        InputMode mode = getDetectedInputMode();
-        boolean useVertical = (mode == InputMode.CANGJIE || mode == InputMode.ZHUYIN || mode == InputMode.SUCHENG);
-
-        String selected;
-        if (useVertical) {
-            selected = verticalHud.getSelected();
-            verticalHud.clearInput();
-        } else {
-            selected = horizontalHud.getSelected();
-            horizontalHud.clearInput();
-        }
-        return selected;
-    }
-
-    public void backspace() {
-        InputMode mode = getDetectedInputMode();
-        boolean useVertical = (mode == InputMode.CANGJIE || mode == InputMode.ZHUYIN || mode == InputMode.SUCHENG);
-
-        String current = useVertical ? verticalHud.getInput() : horizontalHud.getInput();
-        if (current.length() > 1) {
-            String newInput = current.substring(0, current.length() - 1);
-            List<String> builtIn = PinyinDictionary.getSuggestions(newInput);
-            horizontalHud.updateCandidates(builtIn, newInput);
-            verticalHud.updateCandidates(builtIn, newInput);
-        } else {
-            horizontalHud.clear();
-            verticalHud.clear();
-        }
-    }
-
-    public boolean inputChar(char c) {
-        if (!config.isChineseMode()) return false;
-        if (!Character.isLetter(c)) return false;
-
-        InputMode mode = getDetectedInputMode();
-        boolean useVertical = (mode == InputMode.CANGJIE || mode == InputMode.ZHUYIN || mode == InputMode.SUCHENG);
-
-        String current = useVertical ? verticalHud.getInput() : horizontalHud.getInput();
-        current = current + Character.toLowerCase(c);
-        List<String> builtIn = PinyinDictionary.getSuggestions(current);
-        horizontalHud.updateCandidates(builtIn, current);
-        verticalHud.updateCandidates(builtIn, current);
-        return true;
-    }
-
-    public CandidateHud getHud() {
-        return horizontalHud;
+        return mode == InputMode.CANGJIE || mode == InputMode.SUCHENG || mode == InputMode.ZHUYIN;
     }
 
     public VerticalCandidateHud getVerticalHud() {
         return verticalHud;
     }
 
+private void syncFromWindows() {
+}
+
+    public boolean isChineseMode() {
+        if (windowsBridge != null) {
+            return windowsBridge.isChineseMode();
+        }
+        return config.isChineseMode();
+    }
+
+    public void toggleChineseMode() {
+        config.toggleChineseMode();
+        hud.clearInput();
+    }
+
+    public InputMode getDetectedInputMode() {
+        if (windowsBridge != null) {
+            return windowsBridge.getDetectedInputMode();
+        }
+        return config.getInputMode();
+    }
+
+    public boolean isImeOpen() {
+        if (windowsBridge != null) {
+            return windowsBridge.isImeOpen();
+        }
+        return false;
+    }
+
+    public boolean isCapsLockOn() {
+        if (windowsBridge != null) {
+            return windowsBridge.isCapsLockOn();
+        }
+        return false;
+    }
+
+    public boolean isInShiftMode() {
+        if (windowsBridge != null) {
+            return windowsBridge.isInShiftMode();
+        }
+        return false;
+    }
+
+    public boolean hasInput() {
+        return hud.isVisible();
+    }
+
+    public void clearInput() {
+        hud.clearInput();
+    }
+
+    public void selectPrev() {
+        hud.selectPrevious();
+    }
+
+    public void selectNext() {
+        hud.selectNext();
+    }
+
+    public void prevPage() {
+        hud.prevPage();
+    }
+
+    public void nextPage() {
+        hud.nextPage();
+    }
+
+    public String confirmSelection() {
+        String selected = hud.getSelected();
+        hud.clearInput();
+        return selected;
+    }
+
+public void backspace() {
+    String current = hud.getInput();
+    if (current.length() > 1) {
+        String newInput = current.substring(0, current.length() - 1);
+        List<String> builtIn = PinyinDictionary.getSuggestions(newInput);
+        hud.updateCandidates(builtIn, newInput);
+    } else {
+        hud.clear();
+    }
+}
+
+public boolean inputChar(char c) {
+    if (!config.isChineseMode()) return false;
+    if (!Character.isLetter(c)) return false;
+
+    String current = hud.getInput() + Character.toLowerCase(c);
+    List<String> builtIn = PinyinDictionary.getSuggestions(current);
+    hud.updateCandidates(builtIn, current);
+    return true;
+}
+
+    public CandidateHud getHud() {
+        return hud;
+    }
+
     public Object getWindowsBridge() {
-        return eventBridge;
+        return windowsBridge;
     }
 
     public boolean isWindowsSync() {
@@ -234,11 +178,15 @@ public class PlatformIMEManager {
     }
 
     public boolean hasLayoutChanged() {
+        if (windowsBridge != null) {
+            return windowsBridge.hasLayoutChanged();
+        }
         return false;
     }
 
     public boolean checkAndClearLayoutChanged() {
-        return false;
+        boolean changed = hasLayoutChanged();
+        return changed;
     }
 
     public void toggleScriptType() {
@@ -262,14 +210,9 @@ public class PlatformIMEManager {
     }
 
     public String selectCandidate(int index) {
-        InputMode mode = getDetectedInputMode();
-        boolean useVertical = (mode == InputMode.CANGJIE || mode == InputMode.ZHUYIN || mode == InputMode.SUCHENG);
-
-        List<String> candidates = useVertical ? verticalHud.getCandidates() : horizontalHud.getCandidates();
-        if (index >= 0 && index < candidates.size()) {
-            String selected = candidates.get(index);
-            horizontalHud.clearInput();
-            verticalHud.clearInput();
+        if (index >= 0 && index < hud.getCandidates().size()) {
+            String selected = hud.getCandidates().get(index);
+            hud.clearInput();
             return selected;
         }
         return null;
@@ -280,8 +223,7 @@ public class PlatformIMEManager {
     public void showTestCandidates() {
         if (testModeActive) {
             ChineseIMEInitializer.LOGGER.info("[ChineseIME] Hiding test candidates");
-            horizontalHud.clearInput();
-            verticalHud.clearInput();
+            hud.clearInput();
             testModeActive = false;
             return;
         }
@@ -292,28 +234,13 @@ public class PlatformIMEManager {
             testCands = java.util.Arrays.asList("测试词语1", "测试词语2", "测试词语3", "测试词语4", "测试词语5", "测试词语6", "测试词语7", "测试词语8", "测试词语9");
         }
         List<String> displayCands = testCands.subList(0, Math.min(9, testCands.size()));
-        horizontalHud.updateCandidates(displayCands, "test");
-        verticalHud.updateCandidates(displayCands, "test");
+        hud.updateCandidates(displayCands, "test");
         testModeActive = true;
     }
 
     public void clearTestCandidates() {
-        horizontalHud.clearInput();
-        verticalHud.clearInput();
+        hud.clearInput();
         testModeActive = false;
-    }
-
-    public boolean isVerticalLayout() {
-        InputMode mode = getDetectedInputMode();
-        return (mode == InputMode.CANGJIE || mode == InputMode.ZHUYIN || mode == InputMode.SUCHENG);
-    }
-
-    public void renderHud(DrawContext ctx) {
-        if (isVerticalLayout()) {
-            verticalHud.render(ctx);
-        } else {
-            horizontalHud.render(ctx);
-        }
     }
 
     public enum OS {

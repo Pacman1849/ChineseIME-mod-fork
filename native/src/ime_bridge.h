@@ -23,7 +23,7 @@ CHINESEIME_API int IsListening(void);
 CHINESEIME_API int IsChineseMode(void);
 CHINESEIME_API int HasLayoutChanged(void);
 // CHINESEIME_API must not be used here because the function uses __declspec(dllexport) directly
-long GetKeyboardLayoutHKL(void);
+__declspec(dllexport) long GetKeyboardLayoutHKL(void);
 CHINESEIME_API const wchar_t* GetDllVersion(void);
 
 // TSF-based IME data (new API)
@@ -58,8 +58,7 @@ CHINESEIME_API int GetKeyboardStateForPolling(int vKey);
 // Memory management
 CHINESEIME_API void FreeBuffer(void* ptr);
 
-// Callback registration
-CHINESEIME_API void SetCallbacks(void* candidateUpdate, void* layoutChange, void* modeChange, void* keyboardState);
+// Callback registration — SetCallbacks removed (old 4-arg API, replaced by SetEventCallbacks)
 
 // Event-driven API (WndProc hook for IME events)
 CHINESEIME_API void HookWindowProc(void* hwnd);

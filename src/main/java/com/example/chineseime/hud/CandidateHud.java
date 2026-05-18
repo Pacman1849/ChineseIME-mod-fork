@@ -1,6 +1,5 @@
 package com.example.chineseime.hud;
 
-import com.example.chineseime.engine.InputMode;
 import java.util.ArrayList;
 import java.util.List;
 import net.minecraft.client.MinecraftClient;
@@ -15,7 +14,6 @@ public class CandidateHud {
     private int perPage = 9;
     private boolean visible = false;
     private int x, y, width, height;
-    private InputMode currentInputMethod = InputMode.PINYIN;
 
     private int[] cachedItemWidths = null;
     private int cachedItemWidthsStart = -1;
@@ -52,11 +50,7 @@ public class CandidateHud {
         this.composition = composition != null ? composition : "";
         this.selected = 0;
         this.page = 0;
-        if (this.composition.isEmpty()) {
-            this.visible = false;
-        } else {
-            this.visible = !this.candidates.isEmpty() || !this.composition.isEmpty();
-        }
+        this.visible = !this.candidates.isEmpty() || !this.composition.isEmpty();
     }
 
     public void updateCandidatesKeepSelection(List<String> candidates, String composition, int selectedIndex, int page) {
@@ -70,27 +64,7 @@ public class CandidateHud {
             int newPage = this.selected / this.perPage;
             if (newPage != this.page) this.page = newPage;
         }
-        if (this.composition.isEmpty()) {
-            this.visible = false;
-        } else {
-            this.visible = !this.candidates.isEmpty() || !this.composition.isEmpty();
-        }
-    }
-
-    /**
-     * Update candidates with InputMethodType tracking (Grok fix)
-     */
-    public void update(List<String> candidates, String composition, int selectedIndex, InputMode inputMethodType) {
-        this.currentInputMethod = inputMethodType != null ? inputMethodType : InputMode.PINYIN;
-        this.updateCandidatesKeepSelection(candidates, composition, selectedIndex, 0);
-    }
-
-    /**
-     * Update candidates with selection preservation and InputMethodType tracking (Grok fix)
-     */
-    public void updateKeepSelection(List<String> candidates, String composition, int selectedIndex, int page, InputMode inputMethodType) {
-        this.currentInputMethod = inputMethodType != null ? inputMethodType : InputMode.PINYIN;
-        this.updateCandidatesKeepSelection(candidates, composition, selectedIndex, page);
+        this.visible = !this.candidates.isEmpty() || !this.composition.isEmpty();
     }
 
     public void clear() {
@@ -156,12 +130,6 @@ public class CandidateHud {
     public int getY() { return this.y; }
     public int getWidth() { return this.width; }
     public int getHeight() { return this.height; }
-
-    public int getPerPage() { return this.perPage; }
-    public InputMode getCurrentInputMethod() { return this.currentInputMethod; }
-    public void setSelectedIndex(int selected) { this.selected = selected; }
-    public void setPage(int page) { this.page = page; }
-    public void setVisible(boolean visible) { this.visible = visible; }
 
     public float getScaleForClick() {
         MinecraftClient mc = MinecraftClient.getInstance();

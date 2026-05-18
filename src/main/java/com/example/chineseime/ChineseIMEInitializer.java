@@ -1,12 +1,19 @@
 package com.example.chineseime;
 
 import com.example.chineseime.config.ModConfig;
+import com.example.chineseime.engine.InputMode;
 import com.example.chineseime.hud.CandidateHud;
 import com.example.chineseime.hud.ImeStatusIndicator;
-import com.example.chineseime.hud.VerticalCandidateHud;
 import com.example.chineseime.keybind.KeyBindingManager;
 import com.example.chineseime.platform.PlatformIMEManager;
-import com.example.chineseime.platform.win32.NativeImeBridge;
+import com.example.chineseime.platform.win32.WindowsIMEBridgeNative;
+import com.sun.jna.Function;
+import com.sun.jna.Library;
+import com.sun.jna.Native;
+import com.sun.jna.Pointer;
+import com.sun.jna.platform.win32.WinDef;
+import com.sun.jna.platform.win32.WinDef.HWND;
+import com.sun.jna.platform.win32.WinUser;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
@@ -14,10 +21,12 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.ChatScreen;
-import net.minecraft.client.gui.widget.TextFieldWidget;
 import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.ArrayList;
+import java.util.List;
 
 @Environment(EnvType.CLIENT)
 public class ChineseIMEInitializer implements ClientModInitializer {
@@ -26,7 +35,6 @@ public class ChineseIMEInitializer implements ClientModInitializer {
     private static ChineseIMEInitializer instance;
     private ModConfig config;
     private CandidateHud candidateHud;
-    private VerticalCandidateHud verticalCandidateHud;
     private ImeStatusIndicator statusIndicator;
     private PlatformIMEManager imeManager;
     private KeyBindingManager keyBindingManager;
@@ -37,12 +45,25 @@ public class ChineseIMEInitializer implements ClientModInitializer {
     private boolean prevDownPressed = false;
     private boolean prevBracketLeftPressed = false;
     private boolean prevBracketRightPressed = false;
-    private boolean prevEnterPressed = false;
-    private boolean prevBackspacePressed = false;
-    private boolean prevEscPressed = false;
-    private boolean prevNum1Pressed = false, prevNum2Pressed = false, prevNum3Pressed = false;
-    private boolean prevNum4Pressed = false, prevNum5Pressed = false, prevNum6Pressed = false;
-    private boolean prevNum7Pressed = false, prevNum8Pressed = false, prevNum9Pressed = false;
+    private boolean windowHookAttempted = false;
+    private boolean windowHooked = false;
+    private long lastKnownHwnd = 0;
+
+    public interface WINDOWS_API extends Library {
+        WINDOWS_API INSTANCE = Native.load("user32", WINDOWS_API.class);
+
+        interface WNDENUMPROC extends com.sun.jna.Callback {
+            boolean callback(HWND hWnd, Pointer userData);
+        }
+
+        boolean EnumWindows(WNDENUMPROC lpEnumFunc, Pointer userData);
+        int GetWindowTextA(HWND hWnd, char[] lpString, int nMaxCount);
+        int GetWindowTextLength(HWND hWnd);
+        void GetWindowText(HWND hWnd, char[] lpString, int nMaxCount);
+        int GetWindowThreadProcessId(HWND hWnd, int[] lpdwProcessId);
+        HWND GetForegroundWindow();
+        HWND GetActiveWindow();
+    }
 
     @Override
     public void onInitializeClient() {
@@ -50,63 +71,63 @@ public class ChineseIMEInitializer implements ClientModInitializer {
         LOGGER.info("[ChineseIME] Initializing...");
         this.config = ModConfig.load();
         this.candidateHud = new CandidateHud();
-        this.verticalCandidateHud = new VerticalCandidateHud();
         this.statusIndicator = new ImeStatusIndicator();
+        this.imeManager = new PlatformIMEManager(this.config, this.candidateHud, this.statusIndicator);
+        this.keyBindingManager = new KeyBindingManager(this.config, this.imeManager);
+        this.keyBindingManager.register();
 
-        ClientTickEvents.START_CLIENT_TICK.register(client -> {
-            if (this.imeManager == null && PlatformIMEManager.getPlatform() == PlatformIMEManager.OS.WINDOWS) {
-                long windowHandle = client.getWindow().getHandle();
-                if (windowHandle != 0) {
-                    long nativeHandle = NativeImeBridge.getGlfwWin32Window(windowHandle);
-                    LOGGER.info("[ChineseIME] Got native window handle: {}", String.format("0x%X", nativeHandle));
+        ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            if (!windowHookAttempted && client.isRunning()) {
+                windowHookAttempted = true;
+                if (PlatformIMEManager.getPlatform() == PlatformIMEManager.OS.WINDOWS) {
+                    long glfwWindow = client.getWindow().getHandle();
+                    LOGGER.info("[ChineseIME] GLFW window handle: {}", glfwWindow);
 
-                    this.imeManager = new PlatformIMEManager(this.config, this.candidateHud, this.verticalCandidateHud, this.statusIndicator, nativeHandle);
+                    long hwnd = findMinecraftWindow();
+                    LOGGER.info("[ChineseIME] Found Win32 HWND via EnumWindows: {}", hwnd);
 
-                    LOGGER.info("[ChineseIME] IME Manager initialized, syncEnabled={}", this.imeManager.isWindowsSync());
+                    // Try GLFW's own HWND extraction
+                    // Note: glfwGetWin32Window may not be available in all Fabric versions
+                    long glfwHwnd = hwnd; // fallback to enum result if GLFW method unavailable
+                    /*long glfwHwnd = GLFW.glfwGetWin32Window(client.getWindow().getHandle());
+                    LOGGER.info("[ChineseIME] GLFW glfwGetWin32Window: {}", glfwHwnd);
 
-                    if (this.imeManager.isWindowsSync()) {
-                        registerCallbacks();
+                    // Use whichever is valid and non-zero
+                    if (glfwHwnd != 0 && glfwHwnd != hwnd) {
+                        LOGGER.info("[ChineseIME] GLFW HWND differs from EnumWindows, prefer GLFW");
+                        hwnd = glfwHwnd;
+                    }*/
+                    lastKnownHwnd = hwnd;
+                    if (hwnd != 0) {
+                        Object bridge = imeManager.getWindowsBridge();
+                        if (bridge instanceof WindowsIMEBridgeNative) {
+                            ChineseIMEInitializer.LOGGER.info("[ChineseIME] About to call hookWindow with hwnd={}", hwnd);
+                            windowHooked = ((WindowsIMEBridgeNative) bridge).hookWindow(hwnd);
+                            ChineseIMEInitializer.LOGGER.info("[ChineseIME] Window hook result: {}", windowHooked);
+                        } else {
+                            ChineseIMEInitializer.LOGGER.warn("[ChineseIME] bridge is not WindowsIMEBridgeNative");
+                        }
+                    } else {
+                        ChineseIMEInitializer.LOGGER.warn("[ChineseIME] HWND is 0, cannot hook window");
                     }
                 }
             }
-        });
 
-        ClientTickEvents.END_CLIENT_TICK.register(client -> {
-            if (this.imeManager != null) {
-                this.imeManager.tick();
-            }
+            this.keyBindingManager.tick();
+            this.imeManager.tick();
 
-            long windowHandle = client.getWindow().getHandle();
-            boolean leftPressed = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_LEFT) == GLFW.GLFW_PRESS;
-            boolean rightPressed = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_RIGHT) == GLFW.GLFW_PRESS;
-            boolean upPressed = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_UP) == GLFW.GLFW_PRESS;
-            boolean downPressed = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_DOWN) == GLFW.GLFW_PRESS;
+            long window = client.getWindow().getHandle();
+            boolean leftPressed = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_LEFT) == GLFW.GLFW_PRESS;
+            boolean rightPressed = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_RIGHT) == GLFW.GLFW_PRESS;
+            boolean upPressed = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_UP) == GLFW.GLFW_PRESS;
+            boolean downPressed = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_DOWN) == GLFW.GLFW_PRESS;
 
-            boolean hasCandidates = false;
-            if (this.imeManager != null) {
-                CandidateHud h = this.imeManager.getHud();
-                VerticalCandidateHud v = this.imeManager.getVerticalHud();
-                hasCandidates = (h != null && h.isVisible() && !h.getCandidates().isEmpty()) ||
-                               (v != null && v.isVisible() && !v.getCandidates().isEmpty());
-            }
-
-            boolean consumeArrowKeys = hasCandidates;
-
-            if (consumeArrowKeys) {
+            if (this.imeManager.hasInput()) {
                 if ((leftPressed && !prevLeftPressed) || (upPressed && !prevUpPressed)) {
                     this.imeManager.selectPrev();
                 } else if ((rightPressed && !prevRightPressed) || (downPressed && !prevDownPressed)) {
                     this.imeManager.selectNext();
                 }
-                boolean bracketLeftPressed = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_LEFT_BRACKET) == GLFW.GLFW_PRESS;
-                boolean bracketRightPressed = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_RIGHT_BRACKET) == GLFW.GLFW_PRESS;
-                if (bracketLeftPressed && !prevBracketLeftPressed) {
-                    this.imeManager.prevPage();
-                } else if (bracketRightPressed && !prevBracketRightPressed) {
-                    this.imeManager.nextPage();
-                }
-                prevBracketLeftPressed = bracketLeftPressed;
-                prevBracketRightPressed = bracketRightPressed;
             }
 
             prevLeftPressed = leftPressed;
@@ -114,202 +135,106 @@ public class ChineseIMEInitializer implements ClientModInitializer {
             prevUpPressed = upPressed;
             prevDownPressed = downPressed;
 
-            boolean ctrl = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_LEFT_CONTROL) == GLFW.GLFW_PRESS ||
-                    GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_RIGHT_CONTROL) == GLFW.GLFW_PRESS;
-            boolean shift = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_LEFT_SHIFT) == GLFW.GLFW_PRESS ||
-                    GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_RIGHT_SHIFT) == GLFW.GLFW_PRESS;
-            if (ctrl && shift && GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_T) == GLFW.GLFW_PRESS) {
+            boolean ctrl = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_LEFT_CONTROL) == GLFW.GLFW_PRESS ||
+                    GLFW.glfwGetKey(window, GLFW.GLFW_KEY_RIGHT_CONTROL) == GLFW.GLFW_PRESS;
+            boolean shift = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_LEFT_SHIFT) == GLFW.GLFW_PRESS ||
+                    GLFW.glfwGetKey(window, GLFW.GLFW_KEY_RIGHT_SHIFT) == GLFW.GLFW_PRESS;
+            if (ctrl && shift && GLFW.glfwGetKey(window, GLFW.GLFW_KEY_T) == GLFW.GLFW_PRESS) {
                 if (!this.ctrlShiftTPressed) {
-                    if (this.imeManager != null) {
-                        this.imeManager.showTestCandidates();
-                    }
+                    this.imeManager.showTestCandidates();
                     this.ctrlShiftTPressed = true;
                 }
             } else {
                 this.ctrlShiftTPressed = false;
             }
 
-            // ESC: clear IME input
-            boolean escPressed = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_ESCAPE) == GLFW.GLFW_PRESS;
-            if (escPressed && !this.prevEscPressed) {
-                if (this.imeManager != null) {
-                    LOGGER.info("[ChineseIME] ESC pressed, clearing input");
-                    this.imeManager.clearInput();
+            boolean bracketLeftPressed = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_LEFT_BRACKET) == GLFW.GLFW_PRESS;
+            boolean bracketRightPressed = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_RIGHT_BRACKET) == GLFW.GLFW_PRESS;
+            if (this.imeManager.hasInput()) {
+                if ((leftPressed && !prevLeftPressed) || (upPressed && !prevUpPressed)) {
+                    this.imeManager.selectPrev();
+                } else if ((rightPressed && !prevRightPressed) || (downPressed && !prevDownPressed)) {
+                    this.imeManager.selectNext();
+                }
+                if (bracketLeftPressed && !prevBracketLeftPressed) {
+                    this.imeManager.prevPage();
+                } else if (bracketRightPressed && !prevBracketRightPressed) {
+                    this.imeManager.nextPage();
                 }
             }
-            this.prevEscPressed = escPressed;
+            prevBracketLeftPressed = bracketLeftPressed;
+            prevBracketRightPressed = bracketRightPressed;
         });
 
-        LOGGER.info("[ChineseIME] Initialization complete! Platform: {}", PlatformIMEManager.getPlatform());
+        LOGGER.info("[ChineseIME] Initialization complete! Platform: {}, isWindowsSync: {}", PlatformIMEManager.getPlatform(), this.imeManager.isWindowsSync());
     }
 
-    private void registerCallbacks() {
-        NativeImeBridge.CommitCallback commitCB = text -> {
-            if (text == null || text.length() == 0) return;
-
-            String committed = text.toString();
-            LOGGER.info("[ChineseIME] Commit: '{}'", committed);
-
-            // 重要：只在没有 composition 时才真正 commit（避免吞字）
-            if (this.imeManager != null) {
-                CandidateHud hud = this.imeManager.getHud();
-                VerticalCandidateHud vHud = this.imeManager.getVerticalHud();
-
-                boolean hasComposition = (hud != null && !hud.getInput().isEmpty()) ||
-                        (vHud != null && !vHud.getInput().isEmpty());
-
-                if (!hasComposition) {
-                    insertTextToFocusedField(committed);
-                    this.imeManager.clearInput();
-                } else {
-                    LOGGER.warn("[ChineseIME] Commit blocked because composition still exists: {}", committed);
-                }
-            }
-        };
-
-        NativeImeBridge.CandidateCallback candidateCB = (cands, count, selectedIdx) -> {
-            // Candidates are handled via polling + updateFromNativeState
-        };
-
-        NativeImeBridge.ImeChangeCallback imeChangeCB = (int imeType, int chineseMode) -> {
-            LOGGER.info("[ChineseIME] IME changed to type: {}, chineseMode: {}", imeType, chineseMode);
-        };
-
-        NativeImeBridge.KeyboardCallback keyboardCB = (int capsLock, int shiftMode) -> {
-            // Keyboard state handled via polling
-        };
-
-        NativeImeBridge.setEventCallbacks(null, commitCB, candidateCB, imeChangeCB, keyboardCB);
-        LOGGER.info("[ChineseIME] IME event callbacks registered");
-    }
-
-    public void insertTextToFocusedField(String text) {
-        if (text == null || text.isEmpty()) {
-            LOGGER.warn("[ChineseIME] insertTextToFocusedField: text is null or empty");
-            return;
-        }
-
-        MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc == null) {
-            LOGGER.warn("[ChineseIME] insertTextToFocusedField: mc is null");
-            return;
-        }
-        if (mc.currentScreen == null) {
-            LOGGER.warn("[ChineseIME] insertTextToFocusedField: currentScreen is null");
-            return;
-        }
-
-        LOGGER.info("[ChineseIME] insertTextToFocusedField: screen={}", mc.currentScreen.getClass().getSimpleName());
-
+    private long findMinecraftWindow() {
         try {
-            if (mc.currentScreen instanceof ChatScreen chatScreen) {
-                java.lang.reflect.Field field = chatScreen.getClass().getDeclaredField("chatField");
-                field.setAccessible(true);
-                TextFieldWidget chatField = (TextFieldWidget) field.get(chatScreen);
+            int currentPid = (int) ProcessHandle.current().pid();
 
-                if (chatField == null) {
-                    LOGGER.warn("[ChineseIME] insertTextToFocusedField: chatField is null");
-                    return;
+            final int targetPid = currentPid;
+            final List<Long> foundHwnds = new ArrayList<>();
+            final long[] minecraftWindowHwnd = {0};
+
+            WINDOWS_API.WNDENUMPROC callback = new WINDOWS_API.WNDENUMPROC() {
+                public boolean callback(HWND hWnd, Pointer userData) {
+                    try {
+                        int[] pid = new int[1];
+                        WINDOWS_API.INSTANCE.GetWindowThreadProcessId(hWnd, pid);
+                        if (pid[0] == targetPid) {
+                            int length = WINDOWS_API.INSTANCE.GetWindowTextLength(hWnd);
+                            if (length > 0) {
+                                char[] title = new char[length + 1];
+                                WINDOWS_API.INSTANCE.GetWindowText(hWnd, title, length + 1);
+                                String titleStr = new String(title, 0, length);
+                                long hwndVal = Pointer.nativeValue(hWnd.getPointer());
+                                LOGGER.info("[ChineseIME] Found window: '{}' (PID={}, HWND={})", titleStr, pid[0], hwndVal);
+
+                                if (titleStr.contains("Minecraft")) {
+                                    minecraftWindowHwnd[0] = hwndVal;
+                                }
+                            }
+                            foundHwnds.add(Pointer.nativeValue(hWnd.getPointer()));
+                        }
+                    } catch (Exception e) {
+                    }
+                    return true;
                 }
+            };
 
-                String current = chatField.getText();
-                int cursor = chatField.getCursor();
+            WINDOWS_API.INSTANCE.EnumWindows(callback, null);
 
-                LOGGER.info("[ChineseIME] insertTextToFocusedField: current='{}', cursor={}, inserting='{}'",
-                    current, cursor, text);
-
-                String newText = current.substring(0, cursor) + text + current.substring(cursor);
-                chatField.setText(newText);
-                chatField.setCursor(cursor + text.length(), false);
-
-                LOGGER.info("[ChineseIME] insertTextToFocusedField: success! newText='{}'", newText);
-            } else {
-                LOGGER.warn("[ChineseIME] insertTextToFocusedField: not a ChatScreen");
+            if (minecraftWindowHwnd[0] != 0) {
+                LOGGER.info("[ChineseIME] Using Minecraft window HWND: {}", minecraftWindowHwnd[0]);
+                return minecraftWindowHwnd[0];
             }
+
+            if (!foundHwnds.isEmpty()) {
+                long hwnd = foundHwnds.get(foundHwnds.size() - 1);
+                LOGGER.info("[ChineseIME] Using last HWND from enum: {} (of {} windows)", hwnd, foundHwnds.size());
+                return hwnd;
+            }
+
+            HWND foreground = WINDOWS_API.INSTANCE.GetForegroundWindow();
+            if (foreground != null) {
+                long hwnd = Pointer.nativeValue(foreground.getPointer());
+                LOGGER.info("[ChineseIME] Using foreground window HWND: {}", hwnd);
+                return hwnd;
+            }
+
+            HWND active = WINDOWS_API.INSTANCE.GetActiveWindow();
+            if (active != null) {
+                long hwnd = Pointer.nativeValue(active.getPointer());
+                LOGGER.info("[ChineseIME] Using active window HWND: {}", hwnd);
+                return hwnd;
+            }
+
         } catch (Exception e) {
-            LOGGER.error("[ChineseIME] insertTextToFocusedField failed", e);
+            LOGGER.warn("[ChineseIME] findMinecraftWindow failed: {}", e.getMessage());
+            e.printStackTrace();
         }
-    }
-
-    public void handleEnterKey() {
-        if (this.imeManager == null) {
-            LOGGER.warn("[ChineseIME] handleEnterKey: imeManager is null");
-            return;
-        }
-        CandidateHud h = this.imeManager.getHud();
-        VerticalCandidateHud v = this.imeManager.getVerticalHud();
-
-        LOGGER.info("[ChineseIME] handleEnterKey: h.visible={}, h.candidates={}, v.visible={}, v.candidates={}",
-            h.isVisible(), h.getCandidates().size(),
-            v.isVisible(), v.getCandidates().size());
-
-        String selected = null;
-        if (h.isVisible() && !h.getCandidates().isEmpty()) {
-            selected = h.getSelected();
-            LOGGER.info("[ChineseIME] handleEnterKey: selected from horizontal: '{}'", selected);
-        } else if (v.isVisible() && !v.getCandidates().isEmpty()) {
-            selected = v.getSelected();
-            LOGGER.info("[ChineseIME] handleEnterKey: selected from vertical: '{}'", selected);
-        }
-
-        if (selected != null && !selected.isEmpty()) {
-            LOGGER.info("[ChineseIME] handleEnterKey: selecting candidate '{}'", selected);
-            insertTextToFocusedField(selected);
-            this.imeManager.clearInput();
-        } else {
-            LOGGER.warn("[ChineseIME] handleEnterKey: no valid candidate selected!");
-        }
-    }
-
-    public void handleNumberKey(int num) {
-        if (this.imeManager == null || num < 1 || num > 9) {
-            LOGGER.warn("[ChineseIME] handleNumberKey: invalid params, imeManager={}, num={}",
-                this.imeManager != null, num);
-            return;
-        }
-        CandidateHud h = this.imeManager.getHud();
-        VerticalCandidateHud v = this.imeManager.getVerticalHud();
-
-        LOGGER.info("[ChineseIME] handleNumberKey({}): h.visible={}, h.candidates={}, v.visible={}, v.candidates={}",
-            num, h.isVisible(), h.getCandidates().size(),
-            v.isVisible(), v.getCandidates().size());
-
-        java.util.List<String> candidates = null;
-        if (h.isVisible() && !h.getCandidates().isEmpty()) {
-            candidates = h.getCandidates();
-            LOGGER.info("[ChineseIME] handleNumberKey: using horizontal candidates");
-        } else if (v.isVisible() && !v.getCandidates().isEmpty()) {
-            candidates = v.getCandidates();
-            LOGGER.info("[ChineseIME] handleNumberKey: using vertical candidates");
-        }
-
-        if (candidates != null && num <= candidates.size()) {
-            String selected = candidates.get(num - 1);
-            LOGGER.info("[ChineseIME] handleNumberKey({}): selecting '{}'", num, selected);
-            insertTextToFocusedField(selected);
-            this.imeManager.clearInput();
-        } else {
-            LOGGER.warn("[ChineseIME] handleNumberKey({}): index out of bounds, candidates={}",
-                num, candidates != null ? candidates.size() : 0);
-        }
-    }
-
-    public void handleBackspace() {
-        if (this.imeManager == null) return;
-        CandidateHud h = this.imeManager.getHud();
-        VerticalCandidateHud v = this.imeManager.getVerticalHud();
-
-        String comp = h.isVisible() ? h.getInput() : v.getInput();
-        if (comp != null && !comp.isEmpty()) {
-            if (comp.length() > 1) {
-                String newComp = comp.substring(0, comp.length() - 1);
-                java.util.List<String> suggestions = com.example.chineseime.engine.PinyinDictionary.getSuggestions(newComp);
-                h.updateCandidates(suggestions, newComp);
-                v.updateCandidates(suggestions, newComp);
-            } else {
-                this.imeManager.clearInput();
-            }
-        }
+        return 0;
     }
 
     public static ChineseIMEInitializer getInstance() {
@@ -322,10 +247,6 @@ public class ChineseIMEInitializer implements ClientModInitializer {
 
     public CandidateHud getCandidateHud() {
         return this.candidateHud;
-    }
-
-    public VerticalCandidateHud getVerticalCandidateHud() {
-        return this.verticalCandidateHud;
     }
 
     public ImeStatusIndicator getStatusIndicator() {
@@ -341,8 +262,6 @@ public class ChineseIMEInitializer implements ClientModInitializer {
         if (mc == null) return;
 
         this.statusIndicator.render(ctx);
-        if (this.imeManager != null) {
-            this.imeManager.renderHud(ctx);
-        }
+        this.imeManager.renderHud(ctx);
     }
 }

@@ -1,7 +1,6 @@
 #include "tsf_monitor.h"
 #include "ime_state_manager.h"
 #include "sta_thread.h"
-#include "jni_callback.h"
 #include "win_event_bridge.h"
 #include <comdef.h>
 #include <algorithm>
@@ -553,7 +552,9 @@ STDMETHODIMP TsfMonitor::OnActivated(DWORD dwProfileType, LANGID langid, REFCLSI
         ImeStateManager::get().updateChineseMode(chineseMode_);
         ImeStateManager::get().updateImeOpen(imeOpen);
 
-        onImeStateChanged(static_cast<int>(currentInputMethod_), chineseMode_);
+        // Notify Java via WinEventBridge (TSF-initiated state change)
+        WinEventBridge::get().fireImeModeChangeCallback(
+            static_cast<int>(currentInputMethod_), chineseMode_);
     }
 
     return S_OK;
@@ -570,7 +571,9 @@ STDMETHODIMP TsfMonitor::OnChange(REFGUID rguid) {
                 updateCache();
             }
 
-            onImeStateChanged(static_cast<int>(currentInputMethod_), newChineseMode);
+            // Notify Java via WinEventBridge (mode toggled by user via TSF)
+            WinEventBridge::get().fireImeModeChangeCallback(
+                static_cast<int>(currentInputMethod_), newChineseMode);
         }
     }
     return S_OK;
@@ -849,12 +852,13 @@ ITfContext* TsfMonitor::getCurrentContext() {
 }
 
 void TsfMonitor::notifyStateChanges(const IMEState& oldState, const IMEState& newState) {
+    // Notify Java via WinEventBridge (TSF-initiated composition/candidate change)
     if (oldState.composition != newState.composition || oldState.candidates != newState.candidates) {
         std::vector<const wchar_t*> candidatePtrs;
         for (const auto& cand : newState.candidates) {
             candidatePtrs.push_back(cand.c_str());
         }
-        onCandidateChanged(
+        WinEventBridge::get().fireCandidateCallback(
             newState.composition.c_str(),
             candidatePtrs.empty() ? nullptr : candidatePtrs.data(),
             static_cast<int>(newState.candidates.size()),
@@ -862,8 +866,9 @@ void TsfMonitor::notifyStateChanges(const IMEState& oldState, const IMEState& ne
         );
     }
 
-if (oldState.inputMethodType != newState.inputMethodType || oldState.chineseMode != newState.chineseMode) {
-        onImeStateChanged(static_cast<int>(newState.inputMethodType), newState.chineseMode);
+    if (oldState.inputMethodType != newState.inputMethodType || oldState.chineseMode != newState.chineseMode) {
+        WinEventBridge::get().fireImeModeChangeCallback(
+            static_cast<int>(newState.inputMethodType), newState.chineseMode);
     }
 }
 

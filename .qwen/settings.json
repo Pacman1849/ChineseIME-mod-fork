@@ -6,8 +6,9 @@
       "Bash(dir *)",
       "Bash(powershell *)",
       "Bash(.\\gradlew.bat *)",
-      "Bash(python3 *)"
+      "Bash(python3 *)",
+      "Bash(del *)"
     ]
   },
-  "$version": 3
+  "$version": 4
 }

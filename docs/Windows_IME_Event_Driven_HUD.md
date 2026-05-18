@@ -1,5 +1,29 @@
 # Windows IME 事件驱动 + 自绘 HUD 方案设计
 
+> ⚠️ **本文档为设计文档，包含部分未实现的备选方案和过时的代码引用。实际代码实现可能与本文描述不同步，请以 `src/main/java/.../WindowsIMEEventBridge.java` 和 `native/src/win_event_bridge.cpp` 为准。**
+
+---
+
+## 实际实现状态
+
+以下列出本文档描述的设计与实际实现代码的对照：
+
+| 本文描述 | 实际实现 | 状态 |
+|----------|----------|------|
+| `WindowsIMEBridgeNative` 轮询降级桥接 | ✅ 已删除（`WindowsIMEBridgeNative.java` 已不存在，代码也已删除） | ✅ 已删除 |
+| `EventNativeLibrary` 接口定义 | ✅ 通过 `WinEventBridge::EventCallbacks` (std::function) + JNI `SetEventCallbacks()` 实现 | ✅ 已实现 |
+| `HookWindowProc(hwnd)` + `SetEventCallbacks()` 顺序 | ✅ `initialize()` 中先 `setCallbacks()` 再 `startTsfListening()` | ✅ 已实现 |
+| `tick()` 做状态更新 | ✅ `tick()` 仅更新状态指示器 + 清除过时组合状态 | ✅ 已实现 |
+| `WindowsIMEEventBridge` 实例字段存储回调 | ✅ 回调为 `preeditCB`, `commitCB`, `candidateCB`, `imeChangeCB`, `keyboardCB` 等实例字段（GC 安全） | ✅ 已实现 |
+| WndProc 替换方式 | ✅ `SetWindowLongPtr(GWLP_WNDPROC)` → `ImeWndProc` | ✅ 已实现 |
+| 候选词获取 | ✅ `WM_IME_NOTIFY` → `readCandidates()` + TSF `GUID_PROP_CANDIDATE` 回退 | ✅ 已实现 |
+| `refreshCandidates()` 手动触发 | ✅ 保留导出，可用于翻页后刷新 | ✅ 已实现 |
+| `SetCallbacks` 旧 4-arg API | ❌ 已删除（被 `SetEventCallbacks` 取代）；回调通过 `WinEventBridge::EventCallbacks` (std::function) 管理 | ❌ 已删除 |
+| `jni_callback.h/cpp` 回调系统 | ❌ 已删除（C++ 全局回调 `g_*` 和 `s_*` 全部移除）；所有回调统一经 `WinEventBridge` | ❌ 已删除 |
+| TSF 模式切换 / 候选词通知到 Java | ✅ TSF `OnActivated`/`OnChange` 通过 `WinEventBridge::fireImeModeChangeCallback` / `fireCandidateCallback` 通知 Java | ✅ 已实现 |
+
+---
+
 ## 核心思路
 
 **"事件驱动获取 preedit/commit，按需轮询获取候选词"**
@@ -486,9 +510,11 @@ OutputDebugStringA(dbg);
 
 ---
 
-## 降级方案
+## 降级方案（已作废）
 
-当事件驱动失效时（如 WndProc 替换失败），自动回退到现有轮询方案：
+> ⚠️ **`WindowsIMEBridgeNative.java` 已被删除，此备选方案不再适用。当前实现为纯事件驱动，不使用轮询降级。**
+
+当事件驱动失效时（如 WndProc 替换失败），~~自动回退到现有轮询方案~~（此方式已不可用）：
 
 ```java
 public class WindowsIMEBridge {

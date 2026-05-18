@@ -6,7 +6,6 @@ import com.sun.jna.Callback;
 import com.sun.jna.Memory;
 import com.sun.jna.Native;
 import com.sun.jna.Pointer;
-import com.sun.jna.WString;
 import com.sun.jna.win32.StdCallLibrary;
 import com.sun.jna.win32.W32APIOptions;
 import java.io.InputStream;
@@ -15,25 +14,10 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 public class NativeImeBridge {
 
-    public interface CandidateUpdateCallback extends Callback {
-        void invoke(WString composition, Pointer candidates, int count, int selectedIndex);
-    }
-
-    public interface LayoutChangeCallback extends Callback {
-        void invoke(int inputMethodType);
-    }
-
-    public interface ModeChangeCallback extends Callback {
-        void invoke(int chineseMode);
-    }
-
-    public interface KeyboardStateCallback extends Callback {
-        void invoke(int capsLockOn, int inShiftMode);
-    }
     public static final int IME_TYPE_UNKNOWN = 0;
     public static final int IME_TYPE_ENGLISH = 1;
     public static final int IME_TYPE_PINYIN = 2;
@@ -46,94 +30,70 @@ public class NativeImeBridge {
     private static NativeLibrary INSTANCE = null;
     private static boolean loaded = false;
     private static boolean loadAttempted = false;
-    private static final Object LOAD_LOCK = new Object();
+    private static Path cachedDllPath = null;
 
-    private static CandidateUpdateCallback sCandidateCallback = null;
-    private static LayoutChangeCallback sLayoutCallback = null;
-    private static ModeChangeCallback sModeCallback = null;
-    private static KeyboardStateCallback sKeyboardCallback = null;
+    public static NativeLibrary getInstance() {
+        return INSTANCE;
+    }
+
+    private static String cachedComposition = "";
+    private static List<String> cachedCandidates = new CopyOnWriteArrayList<>();
+    private static int cachedSelectedIndex = 0;
+    private static int cachedImeType = IME_TYPE_ENGLISH;
+    private static int cachedChineseMode = 0;
+
+    private static ImeCallback listener = null;
+
+    public interface ImeCallback {
+        void onPreedit(String composition, int cursor, int selLen);
+        void onCommit(String text);
+        void onCandidates(List<String> candidates, int selectedIndex);
+        void onImeChange(int imeType, int chineseMode);
+    }
+
+    public static void setCallback(ImeCallback cb) {
+        listener = cb;
+    }
+
+    public static String getCachedComposition() {
+        return cachedComposition;
+    }
+
+    public static List<String> getCachedCandidates() {
+        return new ArrayList<>(cachedCandidates);
+    }
+
+    public static int getCachedSelectedIndex() {
+        return cachedSelectedIndex;
+    }
+
+    public static int getCachedImeType() {
+        return cachedImeType;
+    }
+
+    public static int getCachedChineseMode() {
+        return cachedChineseMode;
+    }
 
     public static boolean isAvailable() {
-        if (!loadAttempted) {
-            getInstance();
-        }
-        return loaded && INSTANCE != null;
-    }
-
-    public static void registerCallbacks(CandidateUpdateCallback candidateCallback,
-                                          LayoutChangeCallback layoutCallback,
-                                          ModeChangeCallback modeCallback,
-                                          KeyboardStateCallback keyboardCallback) {
-        if (!isAvailable()) return;
-        sCandidateCallback = candidateCallback;
-        sLayoutCallback = layoutCallback;
-        sModeCallback = modeCallback;
-        sKeyboardCallback = keyboardCallback;
-        INSTANCE.SetCallbacks(candidateCallback, layoutCallback, modeCallback, keyboardCallback);
-    }
-
-    private static Path cachedDllPath = null;
-    private static volatile boolean versionChecked = false;
-    private static final String EXPECTED_DLL_VERSION = "2.5.0";
-
-    public static String getDllVersion() {
-        if (!isAvailable()) return "not_loaded";
-        try {
-            return INSTANCE.GetDllVersion();
-        } catch (Throwable e) {
-            return "error: " + e.getMessage();
-        }
-    }
-
-    public static synchronized NativeLibrary getInstance() {
         if (!loadAttempted) {
             loadAttempted = true;
             loadNative();
         }
-        return INSTANCE;
+        return loaded && INSTANCE != null;
     }
 
-    private static void loadNative() {
+    private static synchronized void loadNative() {
         ChineseIMEInitializer.LOGGER.info("[ChineseIME] Loading native library...");
         try {
             String osArch = System.getProperty("os.arch");
             String nativesPath = "/META-INF/natives/" + osArch + "/chineseime_native.dll";
             ChineseIMEInitializer.LOGGER.info("[ChineseIME] Looking for DLL at: {}", nativesPath);
 
-            // Step 1: Try loading cached DLL with version check
-            if (cachedDllPath != null && cachedDllPath.toFile().exists()) {
-                try {
-                    INSTANCE = Native.load(cachedDllPath.toString(), NativeLibrary.class, W32APIOptions.UNICODE_OPTIONS);
-                    loaded = true;
-                    String version = INSTANCE.GetDllVersion();
-                    ChineseIMEInitializer.LOGGER.info("[ChineseIME] Cached DLL version: {}", version);
-                    if (version.equals(EXPECTED_DLL_VERSION)) {
-                        ChineseIMEInitializer.LOGGER.info("[ChineseIME] Using cached DLL (version OK)");
-                        return;
-                    } else {
-                        ChineseIMEInitializer.LOGGER.warn("[ChineseIME] Cached DLL version {} != expected {}, deleting and re-extracting",
-                            version, EXPECTED_DLL_VERSION);
-                        cachedDllPath.toFile().delete();
-                        cachedDllPath = null;
-                        INSTANCE = null;
-                        loaded = false;
-                    }
-                } catch (Throwable e) {
-                    ChineseIMEInitializer.LOGGER.warn("[ChineseIME] Cached DLL load failed: {}, deleting and re-extracting", e.getMessage());
-                    if (cachedDllPath.toFile().exists()) {
-                        cachedDllPath.toFile().delete();
-                    }
-                    cachedDllPath = null;
-                    INSTANCE = null;
-                    loaded = false;
-                }
-            }
-
-            // Step 2: Extract fresh DLL from JAR
             InputStream dllStream = NativeImeBridge.class.getResourceAsStream(nativesPath);
-            ChineseIMEInitializer.LOGGER.info("[ChineseIME] DLL stream from JAR: {}", dllStream != null ? "found" : "null");
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] DLL stream: {}", dllStream != null ? "found" : "null");
             if (dllStream == null) {
-                ChineseIMEInitializer.LOGGER.warn("[ChineseIME] DLL not found in JAR at {}, using fallback", nativesPath);
+                ChineseIMEInitializer.LOGGER.warn("[ChineseIME] DLL not found in JAR at {}", nativesPath);
                 loaded = false;
                 return;
             }
@@ -145,9 +105,11 @@ public class NativeImeBridge {
             ChineseIMEInitializer.LOGGER.info("[ChineseIME] DLL extracted to: {}", cachedDllPath);
 
             INSTANCE = Native.load(cachedDllPath.toString(), NativeLibrary.class, W32APIOptions.UNICODE_OPTIONS);
-            String version = INSTANCE.GetDllVersion();
-            ChineseIMEInitializer.LOGGER.info("[ChineseIME] DLL loaded, version: {} (expected: {})", version, EXPECTED_DLL_VERSION);
             loaded = true;
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] DLL loaded successfully");
+
+            String version = INSTANCE.GetDllVersion();
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] DLL version: {}", version);
         } catch (Exception e) {
             ChineseIMEInitializer.LOGGER.warn("[ChineseIME] DLL load failed: {} - using fallback", e.getMessage());
             e.printStackTrace();
@@ -155,57 +117,64 @@ public class NativeImeBridge {
         }
     }
 
-    public static boolean startListening(long hwnd) {
-        if (!isAvailable()) return false;
-
-        Pointer hwndPtr = hwnd != 0L ? Pointer.createConstant(hwnd) : null;
-        int result = INSTANCE.StartListen(hwndPtr);
-        return result == 1;
+    public interface PreeditCallback extends Callback {
+        void invoke(Pointer text, int cursor, int selLen);
     }
 
-    public static void stopListening() {
-        if (isAvailable()) {
-            INSTANCE.StopListen();
+    public interface CommitCallback extends Callback {
+        void invoke(Pointer text);
+    }
+
+    public interface CandidatesCallback extends Callback {
+        void invoke(Pointer candidates, int count, int selectedIndex);
+    }
+
+    public interface ImeChangeCallback extends Callback {
+        void invoke(int imeType, int chineseMode);
+    }
+
+    public static void hookWindowProc(long hwnd) {
+        if (!isAvailable()) return;
+        try {
+            int result = INSTANCE.HookWindowProcRaw(hwnd);
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] HookWindowProcRaw result: {}", result);
+        } catch (Exception e) {
+            ChineseIMEInitializer.LOGGER.warn("[ChineseIME] HookWindowProc failed: {}", e.getMessage());
         }
     }
 
-    public static int startTsfListening() {
-        if (!isAvailable()) return 0;
-        return INSTANCE.StartTsfListen();
-    }
-
-    public static void stopTsfListening() {
-        if (isAvailable()) {
-            INSTANCE.StopTsfListen();
+    public static void registerCallbacks(PreeditCallback preedit, CommitCallback commit,
+            CandidatesCallback candidates, ImeChangeCallback imeChange) {
+        if (!isAvailable()) return;
+        try {
+            INSTANCE.SetEventCallbacks(preedit, commit, candidates, imeChange);
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] IME callbacks registered");
+        } catch (Exception e) {
+            ChineseIMEInitializer.LOGGER.warn("[ChineseIME] Failed to register callbacks: {}", e.getMessage());
         }
     }
 
-    public static boolean isTsfListening() {
-        return isAvailable() && INSTANCE.IsTsfListening() == 1;
+    public static void unhookWindowProc() {
+        if (isAvailable()) {
+            INSTANCE.UnhookWindowProc();
+        }
     }
 
-    public static boolean isChineseMode() {
-        return isAvailable() && INSTANCE.IsChineseMode() == 1;
+    public static boolean isWindowHooked() {
+        return isAvailable() && INSTANCE.IsWindowHooked() == 1;
     }
 
-    public static boolean hasLayoutChanged() {
-        return isAvailable() && INSTANCE.HasLayoutChanged() == 1;
-    }
-
-    public static boolean hasTsfLayoutChanged() {
-        return isAvailable() && INSTANCE.HasTsfLayoutChanged() == 1;
+    public static void refreshCandidates() {
+        if (isAvailable()) {
+            INSTANCE.RefreshCandidates();
+        }
     }
 
     public static String getCompositionString() {
         if (!isAvailable()) return "";
-        int bufChars = 256;
-        Memory buffer = new Memory(bufChars * 2L);
-        int len = INSTANCE.GetCompositionString(buffer, bufChars);
-        return len <= 0 ? "" : buffer.getWideString(0);
-    }
-
-    public static boolean isComposing() {
-        return isAvailable() && INSTANCE.IsComposing() != 0;
+        char[] buffer = new char[256];
+        int len = INSTANCE.GetCompositionString(buffer, buffer.length);
+        return len <= 0 ? "" : new String(buffer, 0, len);
     }
 
     public static int getCandidateCount() {
@@ -214,17 +183,15 @@ public class NativeImeBridge {
 
     public static String getCandidate(int index) {
         if (!isAvailable()) return "";
-        int bufChars = 64;
-        Memory buffer = new Memory(bufChars * 2L);
-        int len = INSTANCE.GetCandidate(index, buffer, bufChars);
-        return len <= 0 ? "" : buffer.getWideString(0);
+        char[] buffer = new char[64];
+        int len = INSTANCE.GetCandidate(index, buffer, buffer.length);
+        return len <= 0 ? "" : new String(buffer, 0, len);
     }
 
     public static List<String> getCandidates() {
         List<String> result = new ArrayList<>();
         if (!isAvailable()) return result;
-
-        int count = INSTANCE.GetCandidateCount();
+        int count = getCandidateCount();
         for (int i = 0; i < count && i < 20; i++) {
             String cand = getCandidate(i);
             if (!cand.isEmpty()) {
@@ -242,14 +209,8 @@ public class NativeImeBridge {
         return isAvailable() && INSTANCE.GetImeOpenStatus() == 1;
     }
 
-    public static boolean getTsfChineseMode() {
-        return isAvailable() && INSTANCE.GetTsfChineseMode() == 1;
-    }
-
-    public static void refreshImeState() {
-        if (isAvailable()) {
-            INSTANCE.RefreshImeState();
-        }
+    public static boolean isChineseMode() {
+        return isAvailable() && INSTANCE.GetChineseMode() == 1;
     }
 
     public static boolean getShiftMode() {
@@ -260,56 +221,12 @@ public class NativeImeBridge {
         return isAvailable() && INSTANCE.GetCapsLockState() == 1;
     }
 
-    public static boolean isKeyPressed(int vKey) {
-        return isAvailable() && INSTANCE.GetKeyboardStateForPolling(vKey) == 1;
-    }
-
     public static int getInputMethodType() {
         return isAvailable() ? INSTANCE.GetInputMethodType() : 0;
     }
 
-    public static void setEventCallbacks(
-            PreeditCallback preedit,
-            CommitCallback commit,
-            CandidateCallback candidate,
-            ImeChangeCallback imeChange,
-            KeyboardCallback keyboard) {
-        if (!isAvailable()) return;
-        INSTANCE.SetEventCallbacks(preedit, commit, candidate, imeChange, keyboard);
-    }
-
-    public static void hookWindowProc(long hwnd) {
-        if (!isAvailable()) return;
-        Pointer hwndPtr = hwnd != 0L ? Pointer.createConstant(hwnd) : null;
-        INSTANCE.HookWindowProc(hwndPtr);
-    }
-
-    public static void unhookWindowProc() {
-        if (isAvailable()) {
-            INSTANCE.UnhookWindowProc();
-        }
-    }
-
-    public static void refreshCandidates() {
-        if (isAvailable()) {
-            INSTANCE.RefreshCandidates();
-        }
-    }
-
-    public static boolean isWindowHooked() {
-        return isAvailable() && INSTANCE.IsWindowHooked() == 1;
-    }
-
     public static InputMode getInputMethodTypeAsEnum() {
         return getInputMethodTypeAsEnum(getInputMethodType());
-    }
-
-    public static String getKeyboardLayoutName() {
-        if (!isAvailable()) return "";
-        int bufChars = 32;
-        Memory buffer = new Memory(bufChars * 2L);
-        int len = INSTANCE.GetCurrentKeyboardLayoutName(buffer, bufChars * 2);
-        return len <= 0 ? "" : buffer.getWideString(0);
     }
 
     public static InputMode getInputMethodTypeAsEnum(int type) {
@@ -320,7 +237,6 @@ public class NativeImeBridge {
             case IME_TYPE_CANGJIE -> InputMode.CANGJIE;
             case IME_TYPE_WUBI -> InputMode.WUBI;
             case IME_TYPE_SUCHENG -> InputMode.SUCHENG;
-            case IME_TYPE_OTHER_CHINESE -> InputMode.OTHER;
             default -> InputMode.OTHER;
         };
     }
@@ -333,7 +249,6 @@ public class NativeImeBridge {
             case IME_TYPE_CANGJIE -> "倉";
             case IME_TYPE_WUBI -> "五";
             case IME_TYPE_SUCHENG -> "速";
-            case IME_TYPE_OTHER_CHINESE -> "中";
             default -> "?";
         };
     }
@@ -342,83 +257,24 @@ public class NativeImeBridge {
         return getInputMethodTypeString(getInputMethodType());
     }
 
-    public static long getGlfwWin32Window(long glfwWindow) {
-        if (glfwWindow == 0) return 0;
-        try {
-            com.sun.jna.NativeLibrary glfw = com.sun.jna.NativeLibrary.getInstance("glfw");
-            com.sun.jna.Function func = glfw.getFunction("glfwGetWin32Window");
-            if (func != null) {
-                Object result = func.invoke(long.class, new Object[]{glfwWindow});
-                if (result != null) {
-                    return (Long) result;
-                }
-            }
-        } catch (Exception e) {
-            ChineseIMEInitializer.LOGGER.info("[ChineseIME] glfwGetWin32Window not available: {}", e.getMessage());
-        }
-        return glfwWindow;
-    }
-
     public interface NativeLibrary extends StdCallLibrary {
         String GetDllVersion();
-        int StartListen(Pointer hwnd);
-        void StopListen();
-        int IsListening();
-        int IsChineseMode();
-        int IsComposing();
-        int HasLayoutChanged();
-        int StartTsfListen();
-        void StopTsfListen();
-        int IsTsfListening();
-        int GetCompositionString(Pointer buffer, int bufferSize);
+        int HookWindowProc(Pointer hwnd);
+        int HookWindowProcRaw(long hwnd);
+        int InstallMessageHook(long hwnd);
+        void UnhookWindowProc();
+        int IsWindowHooked();
+        int GetCompositionString(char[] buffer, int bufferSize);
         int GetCandidateCount();
-        int GetCandidate(int index, Pointer buffer, int bufferSize);
+        int GetCandidate(int index, char[] buffer, int bufferSize);
         int GetSelectedCandidateIndex();
         int GetImeOpenStatus();
-        int GetTsfChineseMode();
-        int HasTsfLayoutChanged();
-        int GetInputMethodType();
+        int GetChineseMode();
         int GetShiftMode();
         int GetCapsLockState();
-        int GetKeyboardStateForPolling(int vKey);
-        void RefreshImeState();
-        void FreeBuffer(Pointer ptr);
-        long GetKeyboardLayoutHKL();
-        int GetCurrentKeyboardLayoutName(Pointer buffer, int bufferSize);
-        void SetCallbacks(CandidateUpdateCallback candidateUpdate,
-                          LayoutChangeCallback layoutChange,
-                          ModeChangeCallback modeChange,
-                          KeyboardStateCallback keyboardState);
-
-        void SetEventCallbacks(
-            PreeditCallback preedit,
-            CommitCallback commit,
-            CandidateCallback candidate,
-            ImeChangeCallback imeChange,
-            KeyboardCallback keyboard);
-        void HookWindowProc(Pointer hwnd);
-        void UnhookWindowProc();
+        int GetInputMethodType();
         void RefreshCandidates();
-        int IsWindowHooked();
-    }
-
-    public interface PreeditCallback extends Callback {
-        void invoke(WString text, int cursorPos, int selStart, int selLen);
-    }
-
-    public interface CommitCallback extends Callback {
-        void invoke(WString text);
-    }
-
-    public interface CandidateCallback extends Callback {
-        void invoke(Pointer candidates, int count, int selectedIndex);
-    }
-
-    public interface ImeChangeCallback extends Callback {
-        void invoke(int inputMethodType, int chineseMode);
-    }
-
-    public interface KeyboardCallback extends Callback {
-        void invoke(int capsLock, int shiftMode);
+        void SetEventCallbacks(PreeditCallback preedit, CommitCallback commit,
+                               CandidatesCallback candidates, ImeChangeCallback imeChange);
     }
 }

@@ -1,5 +1,4 @@
 #include "imm32_monitor.h"
-#include "jni_callback.h"
 #include "ime_state_manager.h"
 #include <imm.h>
 #include <algorithm>

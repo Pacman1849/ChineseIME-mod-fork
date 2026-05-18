@@ -132,43 +132,20 @@ C++ 回调通过 JNA 直接调用 Java 方法，执行在 C++ 轮询线程，而
 
 ## 三、高危问题 (High)
 
-### ISSUE-004: C++ 回调被注册但未被实际使用
+### ISSUE-004: ~~C++ 回调被注册但未被实际使用~~ → **已修复 (2026-05)**
 
 **文件**: `native/src/ime_bridge.cpp`, `src/main/java/.../NativeImeBridge.java`
-**风险**: 设计冗余，回调机制实际上走不通，全靠轮询
+**状态**: ✅ **已修复**
 
-**问题分析**:
-C++ 层提供了回调机制:
-```cpp
-__declspec(dllexport) void SetCallbacks(void* candidateUpdate, void* layoutChange, ...) {
-    chineseime::setCandidateCallback(reinterpret_cast<CandidateUpdateFunc>(candidateUpdate));
-    // ...
-}
-```
+**修复前**: `registerCallbacks()` 从未在游戏代码中被调用；C++ 层 `g_*` / `s_*` 回调从未被设置，所有状态同步靠轮询。
 
-Java 层也注册了回调:
-```java
-public static void registerCallbacks(...) {
-    INSTANCE.SetCallbacks(candidateCallback, layoutCallback, modeCallback, keyboardCallback);
-}
-```
-
-**但 Java 层从未调用 `registerCallbacks()`！**
-
-查看 `WindowsIMEBridgeNative.initialize()`:
-```java
-public boolean initialize() {
-    NativeImeBridge.getInstance();
-    // ... 没有调用 registerCallbacks() ...
-    NativeImeBridge.startListening(0L);
-    NativeImeBridge.startTsfListening();
-    return true;
-}
-```
-
-**结果**: C++ 层的 `onCandidateChanged()`、`onImeStateChanged()` 等回调函数被调用，但函数指针是 `nullptr`，所以回调被静默忽略。所有状态同步全靠 Java 层的 `update()` 轮询读取。
-
-**建议**: 要么移除回调机制简化代码，要么实现真正的回调驱动架构。
+**修复后**:
+- 删除 `SetCallbacks`（旧 4-arg API）和 `registerCallbacks()`
+- 删除死代码 `jni_callback.h/cpp`（`s_*` 回调整个系统从未被调用）
+- 所有回调统一经 `WinEventBridge::EventCallbacks` (std::function) 管理
+- `SetEventCallbacks` 正确填充 `WinEventBridge::EventCallbacks` 的所有字段
+- TSF `OnActivated`/`OnChange` 通过 `WinEventBridge::fireImeModeChangeCallback()` / `fireCandidateCallback()` 通知 Java
+- 移除 `g_*` 全局函数指针（preedit/commit/candidate）的双重触发，改为单一 `callbacks_` 路径
 
 ---
 
@@ -418,10 +395,9 @@ public static OS getPlatform() {
 |--------|------|-----------|
 | P0 | ISSUE-001 内存泄漏 | 2 小时 |
 | P0 | ISSUE-002 线程竞争 | 4 小时 |
-| P1 | ISSUE-004 回调未使用 | 1 小时 (移除或实现) |
+| P1 | ~~ISSUE-004 回调未使用~~ → ✅ 已修复 | — |
 | P1 | ISSUE-005 第三方输入法 | 4 小时 |
 | P1 | ISSUE-006b updateCandidates 覆盖问题 | 30 分钟 |
-| P2 | ISSUE-006 GetAsyncKeyState vs GetKeyboardState | 已解决 |
 | P2 | ISSUE-007 渲染优化 | 2 小时 |
 | P2 | ISSUE-008 syncFromWindows | 2 小时 |
 | P3 | ISSUE-009 硬编码位置 | 2 小时 |

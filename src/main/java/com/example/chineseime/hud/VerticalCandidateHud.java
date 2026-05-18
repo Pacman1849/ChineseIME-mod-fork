@@ -168,11 +168,12 @@ public class VerticalCandidateHud {
         int blueBarW = (int)(BLUE_BAR_W_1080P / scale);
 
         MinecraftClient mc = MinecraftClient.getInstance();
+        int scaledW = mc.getWindow().getScaledWidth();
         int scaledH = mc.getWindow().getScaledHeight();
         int chatInputTop = scaledH - 22 - 14;
         int panelH = compoH + this.perPage * itemH + pad * 2;
 
-        int panelX = scaledH - panelW - margin;
+        int panelX = scaledW - panelW - margin;
         int panelY = chatInputTop - 2 - panelH;
 
         if (mx < panelX || mx > panelX + panelW) return false;
@@ -224,16 +225,16 @@ public class VerticalCandidateHud {
         int my = (int) mouseY;
 
         MinecraftClient mc = MinecraftClient.getInstance();
+        int scaledW = mc.getWindow().getScaledWidth();
         int scaledH = mc.getWindow().getScaledHeight();
         int chatInputTop = scaledH - 22 - 14;
         int panelW = (int)(WIDTH_1080P / scale);
         int margin = (int)(MARGIN_1080P / scale);
+        int pad = (int)(PAD_1080P / scale);
         int compoH = this.composition.isEmpty() ? 0 : (int)(COMPO_HEIGHT_1080P / scale);
         int itemH = (int)(ITEM_HEIGHT_1080P / scale);
-        int pad = (int)(PAD_1080P / scale);
         int panelH = compoH + this.perPage * itemH + pad * 2;
-
-        int panelX = scaledH - panelW - margin;
+        int panelX = scaledW - panelW - margin;
         int panelY = chatInputTop - 2 - panelH;
 
         this.prevArrowHovered = false;
