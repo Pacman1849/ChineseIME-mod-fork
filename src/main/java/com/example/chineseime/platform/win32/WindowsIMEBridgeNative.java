@@ -301,12 +301,9 @@ public class WindowsIMEBridgeNative {
 
         boolean stateChanged = currentInputMethodType != inputMethodType
             || currentChineseMode != chineseMode;
-        ChineseIMEInitializer.LOGGER.info("[ChineseIME] Poll: stateChanged={}, prevImeType={}, prevChMode={}",
-            stateChanged, currentInputMethodType, currentChineseMode ? 1 : 0);
-
         if (stateChanged) {
-            ChineseIMEInitializer.LOGGER.info("[ChineseIME] Poll calling handleImeChange: imeType={}, chineseMode={}",
-                inputMethodType, chineseMode ? 1 : 0);
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] Poll detected state change: IME={}({}), CMode={}",
+                currentMode, inputMethodType, chineseMode);
             handleImeChange(inputMethodType, chineseMode ? 1 : 0);
         }
 
@@ -316,7 +313,7 @@ public class WindowsIMEBridgeNative {
 
         boolean contentChanged = !currentComposition.equals(pollComposition) || !currentCandidates.equals(pollCandidates);
         if (contentChanged) {
-            ChineseIMEInitializer.LOGGER.info("[ChineseIME] Content changed: comp='{}', cands={}, imeType={}",
+            ChineseIMEInitializer.LOGGER.debug("[ChineseIME] Content changed: comp='{}', cands={}, imeType={}",
                 pollComposition, pollCandidates.size(), currentMode);
             currentComposition = pollComposition;
             currentCandidates = new ArrayList<>(pollCandidates);
@@ -325,8 +322,9 @@ public class WindowsIMEBridgeNative {
         }
 
         tickCounter++;
-        if (tickCounter % 600 == 0 || (tickCounter % 60 == 0 && (!pollCandidates.isEmpty() || !pollComposition.isEmpty()))) {
-            ChineseIMEInitializer.LOGGER.info("[ChineseIME] Poll: IME={}({}), CMode={}, CandCnt={}, Comp='{}'",
+        // Log status summary every 30 seconds (600 ticks) when IME is active
+        if (tickCounter % 600 == 0 && (imeOpen || !pollCandidates.isEmpty() || !pollComposition.isEmpty())) {
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] Status: IME={}({}), CMode={}, CandCnt={}, Comp='{}'",
                 currentMode, inputMethodType, chineseMode, pollCandidates.size(), pollComposition);
         }
 

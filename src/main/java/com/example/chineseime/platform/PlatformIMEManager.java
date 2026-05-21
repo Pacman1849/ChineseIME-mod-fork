@@ -71,8 +71,18 @@ public void tick() {
         return verticalHud;
     }
 
-private void syncFromWindows() {
-}
+    @Deprecated
+    public boolean hasLayoutChanged() {
+        if (windowsBridge != null) {
+            return windowsBridge.hasLayoutChanged();
+        }
+        return false;
+    }
+
+    @Deprecated
+    public boolean checkAndClearLayoutChanged() {
+        return hasLayoutChanged();
+    }
 
     public boolean isChineseMode() {
         if (windowsBridge != null) {
@@ -175,18 +185,6 @@ public boolean inputChar(char c) {
 
     public boolean isWindowsSync() {
         return syncEnabled;
-    }
-
-    public boolean hasLayoutChanged() {
-        if (windowsBridge != null) {
-            return windowsBridge.hasLayoutChanged();
-        }
-        return false;
-    }
-
-    public boolean checkAndClearLayoutChanged() {
-        boolean changed = hasLayoutChanged();
-        return changed;
     }
 
     public void toggleScriptType() {

@@ -1,18 +1,14 @@
+# ChineseIME-mod Phase 1 修复报告 (历史)
 
-以下是專門針對 **Phase 1（拼音吞字母 + 莫名 Commit）** 的完整修復報告：
+> ⚠️ **历史文档**：本文档记录 2026-05-05 的实现修复建议。部分内容可能已过时。
 
----
-
-```markdown
-# ChineseIME-mod cangjie/hud 分支 - Phase 1 修復報告
-
-**日期**：2026-05-05  
-**目標**：修復「拼音輸入吞字母 + 莫名 Commit」問題  
+**日期**：2026-05-05
+**目標**：修復「拼音輸入吞字母 + 莫名 Commit」問題
 **優先級**：最高（最影響使用者體驗）
 
 ---
 
-## 問題原因總結
+## 問題原因總結 (當時分析)
 
 - `CommitCallback` 在 composition 還沒真正結束時就過早觸發
 - `insertTextToFocusedField` 直接用反射修改 `chatField`，容易與 Windows IME 本身的 composition 機制衝突
@@ -21,11 +17,13 @@
 
 ---
 
-## Phase 1 修復 Patch（直接替換）
+## Phase 1 修復 Patch（當時建議）
+
+> ⚠️ 以下修復建議可能已在後續版本中整合，請參考當前代碼驗證。
 
 ### 1. ChineseIMEInitializer.java
 
-#### 替換 `registerCallbacks()` 方法
+當時建議加強 `CommitCallback` 的保護邏輯：
 
 ```java
 private void registerCallbacks() {
@@ -41,7 +39,7 @@ private void registerCallbacks() {
             CandidateHud hud = this.imeManager.getHud();
             VerticalCandidateHud vhud = this.imeManager.getVerticalHud();
 
-            hasActiveComposition = 
+            hasActiveComposition =
                 (hud != null && !hud.getInput().isEmpty()) ||
                 (vhud != null && !vhud.getInput().isEmpty());
         }
@@ -49,22 +47,22 @@ private void registerCallbacks() {
         if (!hasActiveComposition) {
             insertTextToFocusedField(committed);
             if (this.imeManager != null) {
-                this.imeManager.clearInput();   // 徹底清除所有狀態
+                this.imeManager.clearInput();
             }
             LOGGER.info("[ChineseIME] Commit accepted and inserted: '{}'", committed);
         } else {
             LOGGER.warn("[ChineseIME] Commit BLOCKED - Still has active composition: {}", committed);
-            // 可選：暫存 committed，等待 composition 清空後再插入
         }
     };
 
-    // 其他 callback 保持不變...
     NativeImeBridge.setEventCallbacks(null, commitCB, candidateCB, imeChangeCB, keyboardCB);
     LOGGER.info("[ChineseIME] Event callbacks registered with strengthened commit protection");
 }
 ```
 
-#### 替換 `insertTextToFocusedField` 方法（更安全版）
+### 2. insertTextToFocusedField（当时建议版本）
+
+當時建議更安全的實現：
 
 ```java
 public void insertTextToFocusedField(String text) {
@@ -86,7 +84,7 @@ public void insertTextToFocusedField(String text) {
             chatField.setText(newText);
             chatField.setCursor(cursor + text.length(), false);
 
-            LOGGER.info("[ChineseIME] Inserted '{}' at cursor {}, new text: '{}'", 
+            LOGGER.info("[ChineseIME] Inserted '{}' at cursor {}, new text: '{}'",
                        text, cursor + text.length(), newText);
         }
     } catch (Exception e) {
@@ -95,11 +93,7 @@ public void insertTextToFocusedField(String text) {
 }
 ```
 
----
-
-### 2. PlatformIMEManager.java（建議加入）
-
-在 `tick()` 方法中加入以下強制清除邏輯：
+### 3. PlatformIMEManager.tick() 当时建议加入的逻辑
 
 ```java
 public void tick() {
@@ -120,24 +114,7 @@ public void tick() {
 
 ---
 
-### 3. CandidateHud.java & VerticalCandidateHud.java
-
-在兩個類的 `clear()` 方法確保徹底清除：
-
-```java
-public void clear() {
-    this.candidates.clear();
-    this.composition = "";
-    this.selected = 0;
-    this.page = 0;
-    this.visible = false;
-    this.currentInputMethod = InputMode.PINYIN;   // 或保持原本
-}
-```
-
----
-
-## 測試步驟
+## 測試步驟 (当时建议)
 
 1. 替換以上程式碼
 2. 重新編譯 JAR + DLL
@@ -158,18 +135,10 @@ public void clear() {
 
 ---
 
-**測試完請告訴我結果**：
-- 吞字母問題是否明顯改善？
-- 是否還有 `[ChineseIME] Commit BLOCKED` 的 log？
-- 候選詞是否仍然不顯示？
+## 后续更新
 
-如果 Phase 1 修復後仍有問題，我們再進入 **Phase 2（候選詞顯示）**。
+本文档记录的修复建议可能已整合到后续版本中。当前代码中的相关逻辑可能有所不同，请参考：
 
-需要我再補充其他檔案的對應修改嗎？
-```
-
----
-
-**使用方式**：直接複製上方全部內容，存成 `Phase1-Commit-Fix-20260505.md`
-
-需要我繼續準備 **Phase 2（候選詞不顯示）** 的修復報告嗎？
+- `WindowsIMEBridgeNative.java` - `handleCommit()` 方法
+- `ChineseIMEInitializer.java` - `registerCallbacks()` 方法
+- `PlatformIMEManager.java` - `tick()` 方法

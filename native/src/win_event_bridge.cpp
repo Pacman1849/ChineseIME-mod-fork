@@ -140,10 +140,6 @@ void WinEventBridge::onImeMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
         sprintf_s(dbg, "[ChineseIME] ImeWndProc→WM_IME_COMPOSITION, lParam=0x%IX\n", (SIZE_T)lParam);
         OutputDebugStringA(dbg);
         processImeComposition(hwnd, (LPARAM)lParam);
-
-        if (lParam & (IMN_OPENCANDIDATE | IMN_CHANGECANDIDATE)) {
-            processImeNotify(IMN_CHANGECANDIDATE, lParam);
-        }
         break;
     }
     case WM_IME_ENDCOMPOSITION: {
@@ -227,29 +223,39 @@ void WinEventBridge::readCandidates(HIMC himc) {
     OutputDebugStringA(dbg);
 
     DWORD bufSize = ImmGetCandidateListW(himc, 0, nullptr, 0);
-    sprintf_s(dbg, "[ChineseIME] readCandidates: bufSize=%u\n", bufSize);
+    sprintf_s(dbg, "[ChineseIME] readCandidates: bufSize=%u, lastCandidates_.size()=%zu\n",
+        bufSize, lastCandidates_.size());
     OutputDebugStringA(dbg);
 
     if (bufSize > 0) {
         std::vector<char> buf(bufSize);
         CANDIDATELIST* candList = reinterpret_cast<CANDIDATELIST*>(buf.data());
         if (!ImmGetCandidateListW(himc, 0, candList, bufSize)) {
+            sprintf_s(dbg, "[ChineseIME] readCandidates: ImmGetCandidateListW failed\n");
+            OutputDebugStringA(dbg);
             return;
         }
 
         lastCandidates_.clear();
         DWORD count = candList->dwCount;
+        DWORD pageSize = candList->dwPageSize;
+        DWORD pageStart = candList->dwPageStart;
         lastSelectedIndex_ = static_cast<int>(candList->dwSelection);
         if (count > 20) count = 20;
+
+        sprintf_s(dbg, "[ChineseIME] readCandidates: count=%u, sel=%d, pageSize=%u, pageStart=%u\n",
+            count, lastSelectedIndex_, pageSize, pageStart);
+        OutputDebugStringA(dbg);
 
         for (DWORD i = 0; i < count; i++) {
             wchar_t* str = reinterpret_cast<wchar_t*>(buf.data() + candList->dwOffset[i]);
             lastCandidates_.push_back(str);
+            sprintf_s(dbg, "[ChineseIME]   cand[%u]='%S'\n", i, str);
+            OutputDebugStringA(dbg);
         }
 
         ImeStateManager::get().updateCandidates(lastComposition_, lastCandidates_, lastSelectedIndex_);
 
-        // Fire candidate callback (EventCallbacks path — no duplicate global callback)
         if (!lastCandidates_.empty()) {
             std::vector<const wchar_t*> ptrs;
             for (const auto& c : lastCandidates_) {
@@ -259,22 +265,10 @@ void WinEventBridge::readCandidates(HIMC himc) {
                 callbacks_.candidateCallback(ptrs.data(), static_cast<int>(ptrs.size()), lastSelectedIndex_);
             }
         }
+    } else {
+        sprintf_s(dbg, "[ChineseIME] readCandidates: no candidates (bufSize=0)\n");
+        OutputDebugStringA(dbg);
     }
-}
-
-static bool containsChinese(const wchar_t* str) {
-    if (!str) return false;
-    while (*str) {
-        wchar_t c = *str;
-        if ((c >= 0x4E00 && c <= 0x9FFF) ||
-            (c >= 0x3400 && c <= 0x4DBF) ||
-            (c >= 0x20000 && c <= 0x2A6DF) ||
-            (c >= 0xFF00 && c <= 0xFFEF)) {
-            return true;
-        }
-        str++;
-    }
-    return false;
 }
 
 void WinEventBridge::processImeComposition(HWND hwnd, LPARAM lParam) {
@@ -286,12 +280,12 @@ void WinEventBridge::processImeComposition(HWND hwnd, LPARAM lParam) {
 
     if (hasComp) {
         readComposition(himc, lParam);
-    }
-    if (hasComp && !lastComposition_.empty()) {
         readCandidates(himc);
     }
 
     if (hasResult) {
+        // Always read candidates on result too - some IMEs show candidates before commit
+        readCandidates(himc);
         LONG len = ImmGetCompositionStringW(himc, GCS_RESULTSTR, nullptr, 0);
         if (len > 0) {
             std::vector<wchar_t> buf(len / sizeof(wchar_t) + 1);
@@ -300,12 +294,10 @@ void WinEventBridge::processImeComposition(HWND hwnd, LPARAM lParam) {
                 int wcharLen = actual / sizeof(wchar_t);
                 buf[wcharLen] = 0;
 
-                // Only commit Chinese text (ignore Latin pinyin)
-                if (containsChinese(buf.data())) {
-                    // Fire commit callback (EventCallbacks path — no duplicate global callback)
-                    if (callbacks_.commitCallback) {
-                        callbacks_.commitCallback(buf.data());
-                    }
+                // Always fire commit callback when GCS_RESULTSTR is received.
+                // The callback handles filtering (e.g., ignore empty or Latin-only text).
+                if (callbacks_.commitCallback) {
+                    callbacks_.commitCallback(buf.data());
                 }
 
                 lastComposition_.clear();
@@ -313,7 +305,6 @@ void WinEventBridge::processImeComposition(HWND hwnd, LPARAM lParam) {
                 lastSelectedIndex_ = 0;
                 ImeStateManager::get().updateCandidates(L"", {}, 0);
 
-                // Clear preedit/candidate display (EventCallbacks path)
                 if (callbacks_.preeditCallback) callbacks_.preeditCallback(nullptr, 0, 0, 0);
                 if (callbacks_.candidateCallback) callbacks_.candidateCallback(nullptr, 0, 0);
             }

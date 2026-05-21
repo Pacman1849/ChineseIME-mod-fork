@@ -26,23 +26,30 @@ Copy-Item "build\libs\chineseime-1.0.0.jar" "C:\Users\user\AppData\Roaming\Prism
 
 ## 架构要点
 
-### 当前架构：事件驱动 Hook + 轮询 (2026-05-16)
+### 当前架构：事件驱动 Hook + 多层降级 (2026-05-16)
 
-**2026-05-16 重构版本 3.0.0**：简化的 CocoaInput 风格架构
+**2026-05-16 重构版本 3.0.0**：事件驱动优先 + 多层降级架构
 
-1. **窗口 Hook**:
+1. **主路径 - WinEventBridge (事件驱动)**:
    - C++ DLL 通过 `SetWindowLongPtr(GWLP_WNDPROC)` hook Minecraft 窗口
-   - 拦截 `WM_IME_STARTCOMPOSITION`、`WM_IME_COMPOSITION`、`WM_IME_ENDCOMPOSITION`、`WM_IME_NOTIFY`
+   - `ImeWndProc` 拦截 `WM_IME_STARTCOMPOSITION`、`WM_IME_COMPOSITION`、`WM_IME_ENDCOMPOSITION`、`WM_IME_NOTIFY`、`WM_INPUTLANGCHANGE`
+   - 通过 `EventCallbacks` (std::function) 回调 Java
 
-2. **Java 轮询** (每 tick):
+2. **降级路径 1 - WH_GETMESSAGE/WH_CALLWNDPROC Hook**:
+   - 当 WndProc subclassing 失败时自动启用
+   - `WH_GETMESSAGE`: 捕获通过 `GetMessage`/`PeekMessage` 获取的消息
+   - `WH_CALLWNDPROC`: 捕获通过 `SendMessage` 发送的消息（如 `WM_INPUTLANGCHANGE`）
+
+3. **降级路径 2 - Java 轮询** (每 tick):
    - `WindowsIMEBridgeNative.update()` 调用 `GetCompositionString()`、`GetCandidates()` 等
    - 检查 IME 类型、大小写、Shift 模式等状态
    - 更新 HUD 显示
 
-3. **关键修复 (2026-05-16)**:
-   - 移除复杂的 JNA Callback 机制，改用函数指针
+4. **关键修复 (2026-05-16)**:
+   - 移除复杂的 JNA Callback 机制，改用 C-style 函数指针
    - Java 通过 `hookWindow(long hwnd)` 启动 hook
    - HWND 获取使用 `EnumWindows` 遍历当前进程窗口
+   - TSF 监听作为 IME 类型检测的补充
 
 ### WndProc Hook (IMM32)
 `ImeWndProc` 拦截 Windows 消息：
@@ -56,30 +63,42 @@ Copy-Item "build\libs\chineseime-1.0.0.jar" "C:\Users\user\AppData\Roaming\Prism
 - **Shift 指示器**（黄色方块）：中文输入法 && 英文模式时显示
 - 英文模式 = `ImmGetOpenStatus` 返回 0
 - Shift 切换中英文 ↔ IME 打开/关闭状态切换
-- **Caps Lock 指示器**（蓝色背景）：使用 `GetKeyboardState(VK_CAPITAL) & 0x01` 检测
+- **Caps Lock 指示器**（蓝色背景）：使用 `GetAsyncKeyState(VK_CAPITAL) & 0x01` 检测
 - **输入法类型**：无论中英文模式，始终显示输入法简称（拼/注/仓/速/五）
 
 ## DLL 导出函数 (v3.0.0)
 
 ```cpp
-// 窗口 Hook
-void HookWindowProc(void* hwnd);    // 替换窗口过程
-void UnhookWindowProc();            // 恢复原始窗口过程
-int IsWindowHooked();               // 返回 1 表示已 hook
+// 生命周期
+const wchar_t* GetDllVersion();                    // 返回 "3.0.0"
+int HookWindowProc(void* hwnd);                   // 替换窗口过程
+int HookWindowProcRaw(ULONG_PTR hwnd);            // Raw 版本，返回成功/失败
+int InstallMessageHook(ULONG_PTR hwnd);           // 安装 WH_GETMESSAGE/WH_CALLWNDPROC hook
+void UnhookWindowProc();                          // 恢复原始窗口过程
+int IsWindowHooked();                             // 返回 1 表示已 hook
 
 // 状态查询
-int GetInputMethodType();           // 返回 IME 类型 (1-6)
-int GetChineseMode();                // 返回 1 表示中文模式
-int GetImeOpenStatus();             // 返回 1 表示 IME 打开
-int GetShiftMode();                  // 返回 1 表示 Shift 模式
-int GetCapsLockState();             // 返回 1 表示 Caps Lock 开启
-
-// 组合字符串和候选词
 int GetCompositionString(wchar_t* buffer, int bufferSize);
 int GetCandidateCount();
 int GetCandidate(int index, wchar_t* buffer, int bufferSize);
 int GetSelectedCandidateIndex();
+int GetImeOpenStatus();                           // 返回 1 表示 IME 打开
+int GetChineseMode();                             // 返回 1 表示中文模式
+int GetShiftMode();                               // 返回 1 表示 Shift 模式
+int GetCapsLockState();                           // 返回 1 表示 Caps Lock 开启
+int GetInputMethodType();                         // 返回 IME 类型 (1-6)
+
+// 候选词
 void RefreshCandidates();
+
+// 事件回调注册
+void SetEventCallbacks(
+    void* preeditCallback,      // (const wchar_t*, int, int, int)
+    void* commitCallback,        // (const wchar_t*)
+    void* candidateCallback,     // (const wchar_t**, int, int)
+    void* imeChangeCallback,    // (int, int)
+    void* keyboardCallback       // (int, int) - 可选
+);
 ```
 
 ## JNA 关键注意事项
@@ -129,13 +148,15 @@ Error: The specified procedure could not be found
 ## 目录结构
 ```
 native/src/                    # C++ DLL 源码
-├── ime_bridge.cpp             # 主入口、Hook、导出函数 (v3.0.0)
+├── ime_bridge.cpp             # 主入口、Hook、导出函数
 ├── ime_bridge.h               # 头文件
-├── ime_state_manager.cpp      # 状态管理
-├── imm32_monitor.cpp          # IMM32 监控
-├── tsf_monitor.cpp            # TSF 监控
-├── win_event_bridge.cpp        # 窗口事件 Bridge
-└── sta_thread.cpp             # STA 线程管理
+├── ime_state_manager.cpp      # 状态管理单例
+├── imm32_monitor.cpp          # IMM32 监控（降级用）
+├── tsf_monitor.cpp            # TSF 监控（事件驱动补充）
+├── win_event_bridge.cpp       # 窗口事件 Bridge（主事件路径）
+├── win_event_bridge.h         # EventCallbacks 定义
+├── sta_thread.cpp             # STA 线程管理
+└── common.h                   # 共享类型
 
 src/main/java/com/example/chineseime/
 ├── ChineseIMEInitializer.java # 主初始化器、HWND 查找
@@ -143,12 +164,14 @@ src/main/java/com/example/chineseime/
 │   ├── PlatformIMEManager.java # 平台 IME 管理
 │   └── win32/
 │       ├── NativeImeBridge.java   # JNA 接口定义
-│       └── WindowsIMEBridgeNative.java  # Windows IME Bridge 实现
+│       └── WindowsIMEBridgeNative.java  # Windows IME Bridge
 ├── hud/
-│   ├── CandidateHud.java      # 候选词 HUD
+│   ├── CandidateHud.java      # 候选词 HUD (横式)
+│   ├── VerticalCandidateHud.java # 候选词 HUD (竖式)
 │   └── ImeStatusIndicator.java # 输入法状态指示器
 └── engine/
-    └── PinyinDictionary.java  # 内置拼音引擎
+    ├── PinyinDictionary.java  # 内置拼音引擎
+    └── CangjieDictionary.java # 内置仓颉引擎
 
 natives/Release/chineseime_native.dll # 输出的 native DLL
 ```
@@ -156,7 +179,7 @@ natives/Release/chineseime_native.dll # 输出的 native DLL
 ## 核心文件说明
 
 ### ime_bridge.cpp - ImeWndProc()
-CocoaInput 风格的 WndProc Hook：
+CocoaInput 风格的 WndProc Hook，拦截 Windows IME 消息：
 ```cpp
 LRESULT CALLBACK ImeWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
@@ -182,11 +205,33 @@ LRESULT CALLBACK ImeWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 }
 ```
 
+### win_event_bridge.cpp - WinEventBridge
+事件驱动的核心 Bridge，使用 std::function 回调：
+```cpp
+struct WinEventBridge::EventCallbacks {
+    std::function<void(const wchar_t* text, int cursorPos, int selStart, int selLen)> preeditCallback;
+    std::function<void(const wchar_t* text)> commitCallback;
+    std::function<void(const wchar_t** candidates, int count, int selIdx)> candidateCallback;
+    std::function<void(int layout)> layoutChangeCallback;
+    std::function<void(int inputMethodType, bool chineseMode)> imeModeChangeCallback;
+};
+```
+
 ### WindowsIMEBridgeNative.java - hookWindow()
 ```java
 public boolean hookWindow(long hwnd) {
+    // 尝试 WndProc subclassing
     NativeImeBridge.hookWindowProc(hwnd);
     hooked = NativeImeBridge.isWindowHooked();
+
+    // 如果失败，尝试 WH_GETMESSAGE hook
+    if (!hooked) {
+        int msgHookResult = NativeImeBridge.getInstance().InstallMessageHook(hwnd);
+        hooked = (msgHookResult != 0);
+    }
+
+    // 注册回调
+    NativeImeBridge.registerCallbacks(preeditCallback, commitCallback, candidatesCallback, imeChangeCallback);
     return hooked;
 }
 ```
@@ -197,7 +242,7 @@ public boolean hookWindow(long hwnd) {
 private long findMinecraftWindow() {
     int currentPid = (int) ProcessHandle.current().pid();
     // EnumWindows 遍历所有窗口，找到 PID 匹配的
-    // 返回第一个找到的 HWND
+    // 返回第一个包含 "Minecraft" 标题的窗口
 }
 ```
 
@@ -208,7 +253,7 @@ private long findMinecraftWindow() {
 [ChineseIME] Initializing...
 [ChineseIME] DLL loaded successfully
 [ChineseIME] DLL version: 3.0.0
-[ChineseIME] WindowsIMEEventBridge initialized
+[ChineseIME] WindowsIMEBridgeNative initialized (event-driven)
 [ChineseIME] GLFW window handle: 2306097278400
 [ChineseIME] Found window: 'Minecraft 1.21.4' (PID=42564, HWND=xxx)
 [ChineseIME] Using HWND from enum: xxx
@@ -216,7 +261,7 @@ private long findMinecraftWindow() {
 [ChineseIME] Window hook result: true
 ```
 
-### 运行日志
+### 运行日志（正常）
 ```
 [ChineseIME] Poll: IME=LATIN(1), CMode=false, Caps=false, ShiftM=false, ImeOpen=false, CandCnt=0, Comp=''
 [ChineseIME] Indicator: IME=拼, CapsLock=false, ShiftMode=false, ChineseMode=false
@@ -225,7 +270,8 @@ private long findMinecraftWindow() {
 ### 调试建议
 1. 检查日志确认 `Hooked window: true`
 2. 如果 `Hooked window: false`，检查 HWND 是否正确
-3. 使用 Windows Spy++ 或类似工具验证窗口句柄
+3. 注意 `WS_EX_LAYERED` 警告 - 分层窗口可能导致 SetWindowLongPtr 失败
+4. 使用 Windows Spy++ 或类似工具验证窗口句柄
 
 ## 常见问题
 
@@ -233,17 +279,20 @@ private long findMinecraftWindow() {
 1. 检查 `Hooked window: true` - 如果是 false，hook 失败
 2. 检查 HWND 是否正确 - 使用 `EnumWindows` 验证
 3. 确认输入法已打开（中文模式）
+4. 查看是否有 `WS_EX_LAYERED` 警告
 
 ### Hook 失败 (Hooked window: false)
 **可能原因**：
 1. HWND 格式不正确
 2. 窗口已被另一个 Hook 替换
-3. 权限问题
+3. Minecraft 窗口是分层窗口 (WS_EX_LAYERED)
+4. 权限问题
 
 **排查步骤**：
 1. 确认日志显示 `Using HWND from enum: xxx`
 2. 检查 HWND 是否为有效值（通常 > 0x10000）
-3. 尝试使用前台窗口作为回退
+3. 查看是否有 `WARNING: Window has WS_EX_LAYERED` 日志
+4. 降级 hook (WH_GETMESSAGE) 应该会自动启用
 
 ### DLL 版本不匹配
 ```
@@ -251,17 +300,29 @@ private long findMinecraftWindow() {
 ```
 确保 JAR 中的 DLL 是最新版本（删除旧 JAR 重新构建）
 
-## TSF vs IMM32 架构
+## TSF vs IMM32 vs Hook 架构
 
-| 输入法 | 架构 | 候选词获取 | WndProc Hook |
-|--------|------|------------|--------------|
-| 微软拼音 | TSF | TSF API 或 IMM32 | IMM32 可用 |
-| 微软五笔 | TSF | TSF API 或 IMM32 | IMM32 可用 |
-| 微软注音 | TSF | TSF API 或 IMM32 | IMM32 可用 |
-| 微软仓颉 | IMM32 | ImmGetCandidateList 正常 | Hook 正常 |
-| 微软速成 | IMM32 | ImmGetCandidateList 正常 | Hook 正常 |
+| 组件 | 职责 | 备注 |
+|------|------|------|
+| **WinEventBridge + ImeWndProc** | 主事件驱动路径 | 拦截 WM_IME_* 消息 |
+| **WH_GETMESSAGE/WH_CALLWNDPROC** | Hook 降级路径 | WndProc 失败时自动启用 |
+| **TsfMonitor** | TSF 事件监听 | 补充 IME 类型检测 |
+| **Imm32Monitor** | IMM32 监控 | 降级备用 |
+| **Java Polling** | 轮询降级路径 | 最终保底 |
 
 **关键洞察**：
 - IMM32 `ImmGetCandidateList` 对大多数输入法都有效
-- 只有少数纯 TSF IME 需要 TSF API
-- 当前实现主要依赖 IMM32
+- 事件驱动失效时自动降级到 hook，hook 失效时自动降级到轮询
+- 当前实现是多层降级，保证稳定性
+
+## 代码质量问题（待修复）
+
+### P1 - 中等优先级
+1. **`WindowsIMEBridgeNative.update()` 日志过多** - 每帧 stateChanged 都打印日志
+2. **`syncFromWindows()` 是空方法** - 原本设计的状态同步逻辑未实现
+3. **`hasLayoutChanged()` 返回 `false`** - 总是返回 false，无实际功能
+
+### P2 - 低优先级
+1. **两套回调系统并存** - std::function (WinEventBridge) 和 C-style 函数指针 (ime_bridge.cpp)
+2. **`imm32_monitor.cpp` 使用 `GCS_COMPREADSTR`** - 注释说这是 raw pinyin，可能不适合所有 IME
+3. **魔法数字** - 各种硬编码的尺寸、颜色值等

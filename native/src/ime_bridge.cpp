@@ -285,25 +285,17 @@ static LRESULT CALLBACK MessageCallWndProc(int code, WPARAM wParam, LPARAM lPara
     return CallNextHookEx(g_callWndProcHook, code, wParam, lParam);
 }
 
-// WH_GETMESSAGE hook procedure - alternative to WndProc subclassing
-// This hook is called for every GetMessage/PeekMessage in the same thread
+// WH_GETMESSAGE hook procedure - captures posted IME messages
 static LRESULT CALLBACK MessageGetMsgProc(int code, WPARAM wParam, LPARAM lParam) {
     if (code >= 0) {
         MSG* msg = (MSG*)lParam;
-        if (msg && (msg->message >= WM_IME_STARTCOMPOSITION && msg->message <= WM_IME_KEYLAST)
-            || msg->message == WM_INPUTLANGCHANGE) {
-            char dbg[128];
-            sprintf_s(dbg, "[ChineseIME] MessageHook: msg=0x%X, wParam=0x%IX, lParam=0x%IX\n",
-                msg->message, msg->wParam, msg->lParam);
-            OutputDebugStringA(dbg);
-
-            // For WM_INPUTLANGCHANGE, also update state since it might be posted too
-            if (msg->message == WM_INPUTLANGCHANGE && g_hwnd && msg->hwnd == g_hwnd) {
+        if (msg && msg->hwnd) {
+            // Process WM_INPUTLANGCHANGE for any window
+            if (msg->message == WM_INPUTLANGCHANGE) {
                 HKL hkl = (HKL)msg->lParam;
                 DWORD_PTR hklVal = (DWORD_PTR)hkl;
                 WORD imeId = HIWORD(hklVal);
                 LANGID langId = LOWORD(hklVal);
-
                 int imeType = 1;
                 bool isChinese = false;
                 if (langId == 0x0804 || langId == 0x0404 || langId == 0x0C04 || langId == 0x1404) {
@@ -321,13 +313,72 @@ static LRESULT CALLBACK MessageGetMsgProc(int code, WPARAM wParam, LPARAM lParam
                         imeType = (langId == 0x0804) ? 2 : 4;
                     }
                 }
-
                 chineseime::ImeStateManager::get().updateInputMethod(static_cast<chineseime::InputMethodType>(imeType));
                 chineseime::ImeStateManager::get().updateChineseMode(isChinese);
                 chineseime::ImeStateManager::get().updateImeOpen(isChinese);
-
-                if (g_javaImeChange) {
-                    g_javaImeChange(imeType, isChinese ? 1 : 0);
+                if (g_javaImeChange) g_javaImeChange(imeType, isChinese ? 1 : 0);
+            }
+            // Process WM_IME_* messages for hooked window
+            else if (msg->hwnd == g_hwnd) {
+                if (msg->message == WM_IME_STARTCOMPOSITION) {
+                    g_compositionLocationNotified = false;
+                    compositionLocationNotify(msg->hwnd);
+                    if (g_javaPreedit) g_javaPreedit(L"", 0, 0);
+                }
+                else if (msg->message == WM_IME_COMPOSITION) {
+                    HIMC himc = ImmGetContext(msg->hwnd);
+                    if (himc) {
+                        if (msg->lParam & GCS_RESULTSTR) {
+                            LONG len = ImmGetCompositionStringW(himc, GCS_RESULTSTR, NULL, 0);
+                            if (len > 0) {
+                                std::vector<wchar_t> buf(len / sizeof(wchar_t) + 1);
+                                ImmGetCompositionStringW(himc, GCS_RESULTSTR, buf.data(), len);
+                                buf[len / sizeof(wchar_t)] = 0;
+                                if (g_javaCommit) g_javaCommit(buf.data());
+                            }
+                        }
+                        if (msg->lParam & GCS_COMPSTR) {
+                            LONG len = ImmGetCompositionStringW(himc, GCS_COMPSTR, NULL, 0);
+                            int cursor = 0;
+                            if (msg->lParam & GCS_CURSORPOS) {
+                                cursor = ImmGetCompositionStringW(himc, GCS_CURSORPOS, NULL, 0);
+                            }
+                            if (len > 0) {
+                                std::vector<wchar_t> buf(len / sizeof(wchar_t) + 1);
+                                ImmGetCompositionStringW(himc, GCS_COMPSTR, buf.data(), len);
+                                buf[len / sizeof(wchar_t)] = 0;
+                                int selLen = 0;
+                                LONG attrLen = ImmGetCompositionStringW(himc, GCS_COMPATTR, NULL, 0);
+                                if (attrLen > 0) {
+                                    std::vector<char> attrs(attrLen);
+                                    ImmGetCompositionStringW(himc, GCS_COMPATTR, attrs.data(), attrLen);
+                                    for (int i = 0; i < attrLen; i++) {
+                                        if (attrs[i] & ATTR_TARGET_CONVERTED) selLen++;
+                                    }
+                                }
+                                if (g_javaPreedit) g_javaPreedit(buf.data(), cursor, selLen);
+                                readCandidates(himc);
+                            } else {
+                                if (g_javaPreedit) g_javaPreedit(L"", 0, 0);
+                            }
+                        }
+                        ImmReleaseContext(msg->hwnd, himc);
+                    }
+                }
+                else if (msg->message == WM_IME_ENDCOMPOSITION) {
+                    g_compositionLocationNotified = false;
+                    if (g_javaPreedit) g_javaPreedit(L"", 0, 0);
+                }
+                else if (msg->message == WM_IME_NOTIFY) {
+                    if (msg->wParam == IMN_OPENCANDIDATE || msg->wParam == IMN_CHANGECANDIDATE) {
+                        compositionLocationNotify(msg->hwnd);
+                        g_compositionLocationNotified = true;
+                        HIMC himcTmp = ImmGetContext(msg->hwnd);
+                        if (himcTmp) {
+                            readCandidates(himcTmp);
+                            ImmReleaseContext(msg->hwnd, himcTmp);
+                        }
+                    }
                 }
             }
         }
@@ -729,18 +780,32 @@ __declspec(dllexport) int GetCompositionString(wchar_t* buffer, int bufferSize) 
         }
     }
 
-    // Fall back to IMM32
-    if (!g_hwnd) return 0;
-    HIMC himc = ImmGetContext(g_hwnd);
-    if (!himc) return 0;
+    // Fall back to IMM32 - try g_hwnd first, then foreground window
+    HWND hwndToTry = g_hwnd;
+    if (!hwndToTry || !IsWindow(hwndToTry)) {
+        hwndToTry = GetForegroundWindow();
+    }
+
+    if (!hwndToTry) return 0;
+
+    HIMC himc = ImmGetContext(hwndToTry);
+    if (!himc) {
+        // Try foreground window if g_hwnd failed
+        HWND fgWnd = GetForegroundWindow();
+        if (fgWnd && fgWnd != hwndToTry) {
+            himc = ImmGetContext(fgWnd);
+            hwndToTry = fgWnd;
+        }
+        if (!himc) return 0;
+    }
 
     LONG len = ImmGetCompositionStringW(himc, GCS_COMPSTR, NULL, 0);
     if (len > 0 && len <= bufferSize * sizeof(wchar_t)) {
         ImmGetCompositionStringW(himc, GCS_COMPSTR, buffer, len);
-        ImmReleaseContext(g_hwnd, himc);
+        ImmReleaseContext(hwndToTry, himc);
         return len / sizeof(wchar_t);
     }
-    ImmReleaseContext(g_hwnd, himc);
+    ImmReleaseContext(hwndToTry, himc);
     return 0;
 }
 
