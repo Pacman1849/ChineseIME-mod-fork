@@ -1,5 +1,6 @@
 #include "tsf_monitor.h"
 #include "ime_state_manager.h"
+#include "ime_detector.h"
 #include "sta_thread.h"
 #include "win_event_bridge.h"
 #include <comdef.h>
@@ -113,34 +114,8 @@ const GUID GUID_PROP_CANDIDATE =
 
 namespace chineseime {
 
-static bool IsChineseLangId(LANGID langId) {
-    return langId == 0x0804 || langId == 0x0404 || langId == 0x0C04 || langId == 0x1404;
-}
-
 static InputMethodType detectInputMethodTypeFromHklSafe(HKL hkl) {
-    if (!hkl) return InputMethodType::UNKNOWN;
-    LANGID langId = LOWORD(reinterpret_cast<DWORD_PTR>(hkl));
-    if (!IsChineseLangId(langId)) return InputMethodType::ENGLISH;
-    DWORD_PTR hklValue = reinterpret_cast<DWORD_PTR>(hkl);
-    WORD imeId = HIWORD(hklValue);
-    InputMethodType type = detectInputMethodTypeFromImeId(imeId, langId);
-    if (type == InputMethodType::OTHER_CHINESE && IsChineseLangId(langId)) {
-        WCHAR klName[16] = {0};
-        if (GetKeyboardLayoutNameW(klName) && klName[0]) {
-            WCHAR layoutLow = klName[7];
-            WCHAR layoutHigh = klName[6];
-            if (layoutLow >= L'0' && layoutLow <= L'9') {
-                WORD extractedId = static_cast<WORD>((layoutHigh - L'0') * 16 + (layoutLow - L'0'));
-                type = detectInputMethodTypeFromImeId(extractedId, langId);
-            } else if (layoutLow >= L'A' && layoutLow <= L'F') {
-                WORD lowNibble = static_cast<WORD>(layoutLow - L'A' + 10);
-                WORD highNibble = static_cast<WORD>(layoutHigh - L'A' + 10);
-                WORD extractedId = static_cast<WORD>(lowNibble + (highNibble << 4));
-                type = detectInputMethodTypeFromImeId(extractedId, langId);
-            }
-        }
-    }
-    return type;
+    return detectInputMethodTypeFromHkl(hkl);
 }
 
 TsfMonitor::TsfMonitor() {
@@ -279,9 +254,6 @@ void TsfMonitor::shutdown() {
 void TsfMonitor::refreshState() {
     updateCache();
 }
-
-// Forward declaration for window enumeration fallback (defined at end of file)
-static std::vector<std::wstring> getCandidatesFromWindowEnumeration();
 
 void TsfMonitor::pollUpdate() {
     // Always try to query the current input method on each poll
@@ -942,83 +914,20 @@ bool TsfMonitor::getCandidateListFromProperty(ITfContext* pic, std::vector<std::
 
 void TsfMonitor::updateInputMethodType(LANGID langid, REFCLSID clsid, REFGUID guidProfile) {
     char dbg[1024];
-    sprintf_s(dbg, "[ChineseIME] updateInputMethodType: langid=0x%04x\n"
-        "  clsid=%08X-%04X-%04X-%02X%02X%02X%02X%02X%02X%02X%02X\n"
-        "  guidProfile=%08X-%04X-%04X-%02X%02X%02X%02X%02X%02X%02X%02X\n",
-        langid,
-        clsid.Data1, clsid.Data2, clsid.Data3,
-        clsid.Data4[0], clsid.Data4[1], clsid.Data4[2], clsid.Data4[3],
-        clsid.Data4[4], clsid.Data4[5], clsid.Data4[6], clsid.Data4[7],
-        guidProfile.Data1, guidProfile.Data2, guidProfile.Data3,
-        guidProfile.Data4[0], guidProfile.Data4[1], guidProfile.Data4[2], guidProfile.Data4[3],
-        guidProfile.Data4[4], guidProfile.Data4[5], guidProfile.Data4[6], guidProfile.Data4[7]);
+    sprintf_s(dbg, "[ChineseIME] updateInputMethodType: langid=0x%04x, clsid.Data1=0x%08X, guidProfile.Data1=0x%08X\n",
+        langid, clsid.Data1, guidProfile.Data1);
     OutputDebugStringA(dbg);
 
-    // Comprehensive GUID matching - try ALL known GUIDs for each IME type
-    bool detected = false;
+    currentInputMethod_ = detectInputMethodTypeFromGuid(guidProfile, clsid, langid);
 
-    // --- PINYIN GUIDs (Microsoft Pinyin) ---
-    // Try both the profile GUID and the component CLSID
-    if (IsEqualGUID(guidProfile, GUID_MS_PINYIN) || IsEqualGUID(clsid, GUID_MS_PINYIN)) {
-        currentInputMethod_ = InputMethodType::PINYIN;
-        detected = true;
-        OutputDebugStringA("[ChineseIME] -> PINYIN (GUID match)\n");
-    }
-    // Try Microsoft Pinyin known component CLSID
-    else if (clsid.Data1 == 0xE429B25A) {
-        currentInputMethod_ = InputMethodType::PINYIN;
-        detected = true;
-        sprintf_s(dbg, "[ChineseIME] -> PINYIN (clsid.Data1=0x%X matches MSPY CLSID)\n", clsid.Data1);
-        OutputDebugStringA(dbg);
-    }
-    // Try by clsid.Data1 ranges for common IMEs
-    else if (clsid.Data1 == 0x4BDF9F03) {
-        currentInputMethod_ = InputMethodType::CANGJIE;
-        detected = true;
-        OutputDebugStringA("[ChineseIME] -> CANGJIE (clsid.Data1 match)\n");
-    }
-    else if (clsid.Data1 == 0x82590C13) {
-        currentInputMethod_ = InputMethodType::WUBI;
-        detected = true;
-        OutputDebugStringA("[ChineseIME] -> WUBI (clsid.Data1 match)\n");
-    }
-    else if (clsid.Data1 == 0x6024B45F) {
-        currentInputMethod_ = InputMethodType::SUCHENG;
-        detected = true;
-        OutputDebugStringA("[ChineseIME] -> SUCHENG (clsid.Data1 match)\n");
-    }
-    else if (clsid.Data1 == 0xB115690A) {
-        currentInputMethod_ = InputMethodType::ZHUYIN;
-        detected = true;
-        OutputDebugStringA("[ChineseIME] -> ZHUYIN (clsid.Data1 match)\n");
-    }
+    sprintf_s(dbg, "[ChineseIME] updateInputMethodType: detected=%d (%S)\n",
+        (int)currentInputMethod_, getInputMethodTypeName(currentInputMethod_));
+    OutputDebugStringA(dbg);
 
-    // --- Language-based default ---
-    if (!detected) {
-        if (langid == 0x0804) {
-            // zh-CN default: PINYIN
-            currentInputMethod_ = InputMethodType::PINYIN;
-            OutputDebugStringA("[ChineseIME] -> PINYIN (default for zh-CN)\n");
-        } else if (langid == 0x0404 || langid == 0x0C04 || langid == 0x1404) {
-            // zh-TW/HK default: CANGJIE
-            currentInputMethod_ = InputMethodType::CANGJIE;
-            OutputDebugStringA("[ChineseIME] -> CANGJIE (default for zh-TW/HK)\n");
-        } else {
-            currentInputMethod_ = InputMethodType::ENGLISH;
-            OutputDebugStringA("[ChineseIME] -> ENGLISH\n");
-        }
-    }
-
-    // CRITICAL: Always update ImeStateManager when we have a valid type
-    // This is the key fix - don't let polling thread override event-driven detection
     if (currentInputMethod_ != InputMethodType::UNKNOWN && currentInputMethod_ != InputMethodType::ENGLISH) {
-        char dbg2[256];
-        sprintf_s(dbg2, "[ChineseIME] updateInputMethodType: updating ImeStateManager to %d\n", (int)currentInputMethod_);
-        OutputDebugStringA(dbg2);
         ImeStateManager::get().updateInputMethod(currentInputMethod_);
     } else if (currentInputMethod_ == InputMethodType::ENGLISH) {
         ImeStateManager::get().updateInputMethod(InputMethodType::ENGLISH);
-        OutputDebugStringA("[ChineseIME] updateInputMethodType: setting ENGLISH\n");
     }
 }
 
@@ -1146,141 +1055,6 @@ void TsfMonitor::queryCurrentInputMethod() {
             g_lastLoggedType = currentInputMethod_;
         }
     }
-}
-
-// -------------------------------------------------------------------
-// Candidate window enumeration fallback for TSF IMEs that don't use
-// TSF UIElement callbacks. This finds the IME's candidate list window
-// and reads candidates via WM_GETTEXT.
-// -------------------------------------------------------------------
-
-static BOOL CALLBACK EnumCandidateWindowsProc(HWND hwnd, LPARAM lParam) {
-    auto* results = reinterpret_cast<std::vector<std::wstring>*>(lParam);
-
-    wchar_t className[64] = {0};
-    GetClassNameW(hwnd, className, 63);
-
-    // Check for common IME candidate window class names
-    bool isCandidateWindow = false;
-    const wchar_t* classStr = className;
-
-    // Check various IME candidate window class name patterns
-    if (wcsstr(classStr, L"Cicero") != nullptr ||
-        wcsstr(classStr, L"IME") != nullptr ||
-        wcsstr(classStr, L"MSWinCls") != nullptr ||
-        wcsstr(classStr, L"IMJPCnd") != nullptr ||
-        wcsstr(classStr, L"CnCand") != nullptr ||
-        wcsstr(classStr, L"SHGJE") != nullptr ||   // Sogou
-        wcsstr(classStr, L"TTEdit") != nullptr || // Tencent
-        wcsstr(classStr, L"TTF") != nullptr ||     // Tencent
-        wcsstr(classStr, L"QQPY") != nullptr ||   // QQ Pinyin
-        wcsstr(classStr, L"Ba IME") != nullptr ||  // Baidu
-        wcsstr(classStr, L"mscand") != nullptr || // Microsoft
-        wcsstr(classStr, L"CandList") != nullptr ||
-        wcsstr(classStr, L"Conv") != nullptr) {
-        isCandidateWindow = true;
-    }
-
-    if (!isCandidateWindow) return TRUE; // Continue enumeration
-
-    // Check if window is visible and has text
-    if (!IsWindowVisible(hwnd)) return TRUE;
-
-    int textLen = GetWindowTextLengthW(hwnd);
-    if (textLen <= 0) return TRUE;
-
-    std::wstring windowText;
-    windowText.resize(textLen + 1);
-    int actualLen = GetWindowTextW(hwnd, &windowText[0], textLen + 1);
-    if (actualLen <= 0) return TRUE;
-    windowText.resize(actualLen);
-
-    // Check if text contains likely candidate content
-    // (Chinese characters, numbers with dots like "1. 你好", etc.)
-    bool hasCandidateContent = false;
-    for (wchar_t c : windowText) {
-        if (c >= 0x4E00 && c <= 0x9FFF) { // CJK Unified Ideographs
-            hasCandidateContent = true;
-            break;
-        }
-        if ((c >= L'0' && c <= L'9') && !windowText.empty()) {
-            hasCandidateContent = true; // "1. 2. 3." style candidates
-            break;
-        }
-    }
-
-    if (!hasCandidateContent) return TRUE;
-
-    char dbg[256];
-    sprintf_s(dbg, "[ChineseIME] Candidate window found: class=%S, text='%S'\n",
-        classStr, windowText.c_str());
-    OutputDebugStringA(dbg);
-
-    // Parse candidates from the text
-    // Candidates are usually separated by newlines, spaces, or numbers with dots
-    std::wstring current;
-    for (wchar_t c : windowText) {
-        if (c == L'\n' || c == L'\r') {
-            if (!current.empty()) {
-                // Remove leading number+digit patterns like "1.", "2. "
-                size_t dotPos = current.find(L'.');
-                if (dotPos != std::wstring::npos && dotPos < 4) {
-                    current = current.substr(dotPos + 1);
-                }
-                // Trim leading whitespace
-                while (!current.empty() && (current[0] == L' ' || current[0] == L'\t')) {
-                    current = current.substr(1);
-                }
-                // Only add if it looks like Chinese text
-                if (!current.empty()) {
-                    bool hasChinese = false;
-                    for (wchar_t ch : current) {
-                        if (ch >= 0x4E00 && ch <= 0x9FFF) {
-                            hasChinese = true;
-                            break;
-                        }
-                    }
-                    if (hasChinese && current.size() <= 20) {
-                        results->push_back(current);
-                    }
-                }
-                current.clear();
-            }
-        } else {
-            current += c;
-        }
-    }
-
-    // Handle text without newlines (single candidate or concatenated)
-    if (!current.empty() && results->empty()) {
-        size_t dotPos = current.find(L'.');
-        if (dotPos != std::wstring::npos && dotPos < 4) {
-            current = current.substr(dotPos + 1);
-        }
-        while (!current.empty() && (current[0] == L' ' || current[0] == L'\t')) {
-            current = current.substr(1);
-        }
-        if (!current.empty()) {
-            bool hasChinese = false;
-            for (wchar_t ch : current) {
-                if (ch >= 0x4E00 && ch <= 0x9FFF) {
-                    hasChinese = true;
-                    break;
-                }
-            }
-            if (hasChinese && current.size() <= 20) {
-                results->push_back(current);
-            }
-        }
-    }
-
-    return TRUE; // Continue to find more candidate windows
-}
-
-static std::vector<std::wstring> getCandidatesFromWindowEnumeration() {
-    std::vector<std::wstring> candidates;
-    EnumWindows(EnumCandidateWindowsProc, reinterpret_cast<LPARAM>(&candidates));
-    return candidates;
 }
 
 } // namespace chineseime

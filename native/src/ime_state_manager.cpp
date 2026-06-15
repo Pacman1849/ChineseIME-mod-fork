@@ -1,4 +1,5 @@
 #include "ime_state_manager.h"
+#include "ime_detector.h"
 #include <algorithm>
 #include <windows.h>
 
@@ -10,91 +11,7 @@ ImeStateManager& ImeStateManager::get() {
 }
 
 InputMethodType detectInputMethodTypeFromImeId(WORD imeId, LANGID langId) {
-    // First check if it's a Chinese language
-    bool isZhCN = (langId == 0x0804);
-    bool isZhTW = (langId == 0x0404 || langId == 0x0C04 || langId == 0x1404 || langId == 0x1004);
-    bool isChinese = isZhCN || isZhTW;
-
-    if (!isChinese) {
-        return InputMethodType::ENGLISH;
-    }
-
-    // Get keyboard layout name for pattern matching
-    WCHAR klName[64] = {0};
-    GetKeyboardLayoutNameW(klName);
-    char klNameA[64] = {0};
-    WideCharToMultiByte(CP_ACP, 0, klName, -1, klNameA, sizeof(klNameA), NULL, NULL);
-
-    // For TSF IMEs: imeId often equals the language ID (e.g., 0x0804 for zh-CN, 0x0404 for zh-TW)
-    // Check if imeId is just a language ID (not a real IME ID) - this is a TSF IME
-    if (imeId == langId) {
-        // TSF IME - use language default
-        if (isZhCN) {
-            // zh-CN defaults to PINYIN
-            return InputMethodType::PINYIN;
-        } else if (isZhTW) {
-            // zh-TW defaults to CANGJIE (most common)
-            return InputMethodType::CANGJIE;
-        }
-    }
-
-    // Check for IME-specific patterns in layout name (only for full word matches)
-    // Check Cangjie first (vertical layout IMEs)
-    if (strstr(klNameA, "Cangjie") || strstr(klNameA, "SCangjie") ||
-        strstr(klNameA, "ChangJie")) {
-        return InputMethodType::CANGJIE;
-    }
-    // Check Sucheng (Quick)
-    if (strstr(klNameA, "Sucheng") || strstr(klNameA, "SQuick") ||
-        strstr(klNameA, "Quick")) {
-        return InputMethodType::SUCHENG;
-    }
-    // Check other IMEs
-    if (strstr(klNameA, "Pinyin") || strstr(klNameA, "MSPY")) {
-        return InputMethodType::PINYIN;
-    }
-    if (strstr(klNameA, "Wubi") || strstr(klNameA, "WUBI")) {
-        return InputMethodType::WUBI;
-    }
-    if (strstr(klNameA, "Zhuyin") || strstr(klNameA, "New Phonetic")) {
-        return InputMethodType::ZHUYIN;
-    }
-
-    // Check by IME ID for legacy IMM32 IMEs
-    switch (imeId) {
-    case 0x0000:
-    case 0x0001: case 0x0010: case 0xE010: case 0xE020:
-        return InputMethodType::PINYIN;
-    case 0x0002: case 0xE011:
-        return InputMethodType::WUBI;
-    case 0x0003: case 0xE001:
-        return InputMethodType::ZHUYIN;
-    case 0x0004: case 0xE002: case 0xE012: case 0xE022: case 0xE032:
-        return InputMethodType::CANGJIE;
-    case 0x0005: case 0xE003: case 0xE013: case 0xE023:
-        return InputMethodType::SUCHENG;
-    case 0x0011:
-        return InputMethodType::PINYIN;
-    case 0x0012:
-        return InputMethodType::WUBI;
-    case 0x0013:
-        return InputMethodType::ZHUYIN;
-    case 0x0014:
-        return InputMethodType::CANGJIE;
-    case 0x0015:
-        return InputMethodType::SUCHENG;
-    default:
-        break;
-    }
-
-    // Fallback based on language
-    if (isZhCN) {
-        return InputMethodType::PINYIN;
-    } else if (isZhTW) {
-        return InputMethodType::CANGJIE;
-    }
-
-    return InputMethodType::OTHER_CHINESE;
+    return chineseime::detectInputMethodTypeFromImeId(imeId, langId);
 }
 
 void ImeStateManager::updateInputMethod(InputMethodType type) {
@@ -150,15 +67,6 @@ void ImeStateManager::updateComposition(const std::wstring& comp) {
 void ImeStateManager::updateCandidates(const std::wstring& comp, const std::vector<std::wstring>& cands, int selectedIndex) {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    // KEY FIX: Incremental merge — don't blindly overwrite with empty strings.
-    // Multiple callers (OnCandidateListUIElementChanged, UpdateUIElement,
-    // updateCache) independently read composition and candidates from IMM32/TSF.
-    // They may pass L"" for comp when they only have candidates available,
-    // which would wipe a valid composition cached from a prior read.
-    //
-    // Rule: only update a field if the new value is non-empty, OR if BOTH
-    // comp AND cands are empty (meaning the IME session is genuinely ending).
-    // This preserves cached composition/candidates across partial reads.
     if (!comp.empty() || cands.empty()) {
         if (state_.composition != comp) {
             state_.composition = comp;
