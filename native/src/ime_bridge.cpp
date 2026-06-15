@@ -641,6 +641,13 @@ __declspec(dllexport) int GetSelectedCandidateIndex() {
 }
 
 __declspec(dllexport) int GetImeOpenStatus() {
+    {
+        auto state = chineseime::ImeStateManager::get().getSnapshot();
+        if (state.isValid) {
+            return state.imeOpen ? 1 : 0;
+        }
+    }
+    
     if (!g_hwnd) return 0;
     DWORD threadId = GetWindowThreadProcessId(g_hwnd, NULL);
     DWORD currentThreadId = GetCurrentThreadId();
@@ -660,6 +667,13 @@ __declspec(dllexport) int GetImeOpenStatus() {
 }
 
 __declspec(dllexport) int GetChineseMode() {
+    {
+        auto state = chineseime::ImeStateManager::get().getSnapshot();
+        if (state.isValid) {
+            return state.chineseMode ? 1 : 0;
+        }
+    }
+    
     if (!g_hwnd) return 0;
     DWORD threadId = GetWindowThreadProcessId(g_hwnd, NULL);
     DWORD currentThreadId = GetCurrentThreadId();

@@ -320,7 +320,9 @@ public class WindowsIMEBridgeNative {
         long pollInterval;
 
         // Determine polling interval based on IME activity state
-        boolean isActive = isImeOpen() || isChineseMode() || !currentComposition.isEmpty() || !currentCandidates.isEmpty();
+        boolean imeOpenCheck = isImeOpen();
+        boolean chineseModeCheck = isChineseMode();
+        boolean isActive = imeOpenCheck || chineseModeCheck || !currentComposition.isEmpty() || !currentCandidates.isEmpty();
         if (isActive) {
             pollInterval = ACTIVE_POLL_INTERVAL;
         } else {
@@ -343,9 +345,9 @@ public class WindowsIMEBridgeNative {
         }
 
         int inputMethodType = NativeImeBridge.getInputMethodType();
-        boolean chineseMode = NativeImeBridge.isChineseMode();
+        boolean chineseMode = chineseModeCheck; // Use cached value
         boolean capsLockOn = NativeImeBridge.getCapsLockState();
-        boolean imeOpen = NativeImeBridge.getImeOpenStatus();
+        boolean imeOpen = imeOpenCheck; // Use cached value
         boolean inShiftMode = NativeImeBridge.getShiftMode();
         InputMode currentMode = NativeImeBridge.getInputMethodTypeAsEnum(inputMethodType);
 
