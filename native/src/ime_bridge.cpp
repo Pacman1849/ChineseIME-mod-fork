@@ -713,6 +713,8 @@ __declspec(dllexport) int GetInputMethodType() {
     if (fgWnd) {
         HKL hkl = GetKeyboardLayout(GetWindowThreadProcessId(fgWnd, NULL));
         if (hkl) {
+            // Update ImeStateManager with HKL state for better consistency
+            chineseime::ImeStateManager::get().updateHklState((long)hkl);
             int t = detectTypeFromHklInternal(hkl);
             if (t > 0) return t;
         }
@@ -721,7 +723,11 @@ __declspec(dllexport) int GetInputMethodType() {
     if (g_hwnd) {
         HKL hkl = GetKeyboardLayout(GetWindowThreadProcessId(g_hwnd, NULL));
         if (!hkl) hkl = GetKeyboardLayout(0);
-        if (hkl) return detectTypeFromHklInternal(hkl);
+        if (hkl) {
+            // Update ImeStateManager with HKL state for better consistency
+            chineseime::ImeStateManager::get().updateHklState((long)hkl);
+            return detectTypeFromHklInternal(hkl);
+        }
     }
 
     return static_cast<int>(chineseime::InputMethodType::ENGLISH);

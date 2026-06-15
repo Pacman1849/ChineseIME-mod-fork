@@ -31,6 +31,10 @@ public class WindowsIMEBridgeNative {
     private boolean prevHudShown = false;
     private boolean wasInEnglishMode = false;
     private int ticksSinceModeSwitch = 0;
+    private long lastUpdateTime = 0;
+    private static final long MIN_UPDATE_INTERVAL = 50; // Minimum 50ms between updates (20 FPS max)
+    private static final long INACTIVE_POLL_INTERVAL = 500; // Poll every 500ms when inactive
+    private static final long ACTIVE_POLL_INTERVAL = 50;  // Poll every 50ms when active
 
     private NativeImeBridge.PreeditCallback preeditCallback;
     private NativeImeBridge.CommitCallback commitCallback;
@@ -107,31 +111,67 @@ public class WindowsIMEBridgeNative {
             return hooked;
         }
 
-        // Try WndProc subclassing first
-        NativeImeBridge.hookWindowProc(hwnd);
-        hooked = NativeImeBridge.isWindowHooked();
-
-        // If WndProc hook failed, try WH_GETMESSAGE hook as fallback
-        if (!hooked) {
-            ChineseIMEInitializer.LOGGER.info("[ChineseIME] WndProc hook failed, trying WH_GETMESSAGE hook...");
-            try {
-                int msgHookResult = NativeImeBridge.getInstance().InstallMessageHook(hwnd);
-                hooked = (msgHookResult != 0);
-                if (hooked) {
-                    ChineseIMEInitializer.LOGGER.info("[ChineseIME] WH_GETMESSAGE hook installed successfully");
-                }
-            } catch (Exception e) {
-                ChineseIMEInitializer.LOGGER.warn("[ChineseIME] InstallMessageHook failed: {}", e.getMessage());
-            }
+        // Validate window handle before attempting to hook
+        if (!isValidWindow(hwnd)) {
+            ChineseIMEInitializer.LOGGER.warn("[ChineseIME] Invalid window handle provided: {}", hwnd);
+            return false;
         }
 
-        ChineseIMEInitializer.LOGGER.info("[ChineseIME] Hooked window: {}, isWindowHooked={}", hooked, NativeImeBridge.isWindowHooked());
+        // Try WndProc subclassing first (more efficient, lower latency)
+        if (tryHookWindowProc(hwnd)) {
+            hooked = true;
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] WndProc hook installed successfully");
+        } 
+        // If WndProc hook failed, try WH_GETMESSAGE hook as fallback
+        else if (tryHookGetMessage(hwnd)) {
+            hooked = true;
+            ChineseIMEInitializer.LOGGER.info("[ChineseIME] WH_GETMESSAGE hook installed successfully");
+        } 
+        // If both hooks fail, log error and return false
+        else {
+            ChineseIMEInitializer.LOGGER.error("[ChineseIME] All hooking methods failed for window: {}", hwnd);
+            hooked = false;
+        }
+
+        ChineseIMEInitializer.LOGGER.info("[ChineseIME] Hooking result: hooked={}, isWindowHooked={}", hooked, NativeImeBridge.isWindowHooked());
 
         // Always register callbacks - they may be used by either WndProc hook or WH_* hooks
         NativeImeBridge.registerCallbacks(preeditCallback, commitCallback, candidatesCallback, imeChangeCallback);
         ChineseIMEInitializer.LOGGER.info("[ChineseIME] IME callbacks registered");
 
         return hooked;
+    }
+
+    private boolean isValidWindow(long hwnd) {
+        if (hwnd == 0) {
+            return false;
+        }
+        try {
+            return NativeImeBridge.getInstance().IsWindow(hwnd) != 0;
+        } catch (Exception e) {
+            ChineseIMEInitializer.LOGGER.debug("[ChineseIME] Error checking window validity: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean tryHookWindowProc(long hwnd) {
+        try {
+            NativeImeBridge.hookWindowProc(hwnd);
+            return NativeImeBridge.isWindowHooked() != 0;
+        } catch (Exception e) {
+            ChineseIMEInitializer.LOGGER.debug("[ChineseIME] WndProc hook failed: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean tryHookGetMessage(long hwnd) {
+        try {
+            int msgHookResult = NativeImeBridge.getInstance().InstallMessageHook(hwnd);
+            return msgHookResult != 0;
+        } catch (Exception e) {
+            ChineseIMEInitializer.LOGGER.debug("[ChineseIME] WH_GETMESSAGE hook failed: {}", e.getMessage());
+            return false;
+        }
     }
 
     public void unhookWindow() {
@@ -231,7 +271,7 @@ public class WindowsIMEBridgeNative {
 
     private List<String> getFallbackCandidates(String composition) {
         InputMode mode = NativeImeBridge.getInputMethodTypeAsEnum(currentInputMethodType);
-        ChineseIMEInitializer.LOGGER.info("[ChineseIME] getFallbackCandidates for mode: {}", mode);
+        // ChineseIMEInitializer.LOGGER.info("[ChineseIME] getFallbackCandidates for mode: {}", mode);
 
         switch (mode) {
             case PINYIN:
@@ -275,6 +315,28 @@ public class WindowsIMEBridgeNative {
 
     public void update() {
         if (!initialized) return;
+
+        long currentTime = System.currentTimeMillis();
+        long pollInterval;
+
+        // Determine polling interval based on IME activity state
+        boolean isActive = isImeOpen() || isChineseMode() || !currentComposition.isEmpty() || !currentCandidates.isEmpty();
+        if (isActive) {
+            pollInterval = ACTIVE_POLL_INTERVAL;
+        } else {
+            // Increase polling interval when inactive to save CPU
+            long timeSinceLastUpdate = currentTime - lastUpdateTime;
+            if (timeSinceLastUpdate < INACTIVE_POLL_INTERVAL) {
+                return; // Skip update if not enough time has passed
+            }
+            pollInterval = INACTIVE_POLL_INTERVAL;
+        }
+
+        // Check if enough time has passed since last update
+        if (currentTime - lastUpdateTime < pollInterval) {
+            return;
+        }
+        lastUpdateTime = currentTime;
 
         if (wasInEnglishMode) {
             ticksSinceModeSwitch++;

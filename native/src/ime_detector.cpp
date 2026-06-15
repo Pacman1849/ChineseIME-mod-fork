@@ -7,19 +7,37 @@
 namespace chineseime {
 
 static const std::wstring_view CANDIDATE_WINDOW_CLASSES[] = {
+    // Standard Windows IME classes
     L"Cicero", L"IME", L"MSWinCls", L"IMJPCnd", L"CnCand",
+    
+    // Sogou IME (搜狗拼音)
     L"SHGJE",     // Sogou
     L"SoPYComp",  // Sogou composition window
     L"SogouPY",   // Sogou candidate window
+    L"SogouInput", // Sogou Input
+    
+    // Tencent QQ Pinyin (QQ拼音) and Wubi (QQ五笔)
     L"TTEdit",    // Tencent
     L"TTF",       // Tencent
     L"QQPY",      // QQ Pinyin
     L"QQWubi",    // QQ Wubi
+    L"QQInput",   // QQ Input
+    
+    // Baidu IME (百度拼音)
     L"Ba IME",    // Baidu
     L"BaiduPY",   // Baidu Pinyin
+    L"BaiduInput", // Baidu Input
+    
+    // Microsoft IME
     L"mscand",    // Microsoft
+    L"MSIM",      // Microsoft IME
+    
+    // Google Pinyin (谷歌拼音)
     L"GooglePinyin", // Google Pinyin
     L"GPY",       // Google Pinyin
+    L"GoogleIME",  // Google IME
+    
+    // Third-party IMEs
     L"Xiaobang",  // Xiaobang/小帮
     L"Jidian",    // Jidian/极点五笔
     L"RimeTSF",   // TSF-based RIME input
@@ -36,6 +54,18 @@ static const std::wstring_view CANDIDATE_WINDOW_CLASSES[] = {
     L"CCInput",   // 超强输入法
     L"Newpy",     // 新型拼音
     L"Ying", L"Shuang", L"WB",
+    
+    // Additional third-party IMEs
+    L"Sougou",    // Alternative spelling
+    L"SougouPY",
+    L"Chinanet",  // ChinaNet
+    L"ChinanetPY",
+    L"Kingsoft",  // Kingsoft/WPS
+    L"WPSPY",     // WPS Pinyin
+    L"EverNote",  // Evernote (used for input sometimes)
+    L"NiceCash",  // NiceCash
+    L"HongYuan",  // HongYuan
+    L"Charm",     // Charm
 };
 
 bool IsChineseLangId(LANGID langId) {
@@ -76,6 +106,13 @@ static const KnownTsfIme KNOWN_TSF_IMES[] = {
 
     // RIME / Weasel (小狼毫)
     { 0x8CD6C3F2, 0, 0, InputMethodType::PINYIN,    "RIME/Weasel" },
+
+    // Additional third-party IMEs
+    { 0xF06B4E90, 0, 0, InputMethodType::PINYIN,    "HongYuan Pinyin" },
+    { 0xC71A8D70, 0, 0, InputMethodType::PINYIN,    "Charm Pinyin" },
+    { 0xB8D9E3C0, 0, 0, InputMethodType::PINYIN,    "NiceCash Pinyin" },
+    { 0xA5F2C7B0, 0, 0, InputMethodType::WUBI,      "HongYuan Wubi" },
+    { 0x92E1B6A0, 0, 0, InputMethodType::WUBI,      "Charm Wubi" },
 };
 
 static InputMethodType matchKnownTsfIme(unsigned long data1) {
@@ -112,16 +149,21 @@ InputMethodType detectInputMethodTypeFromLayoutName(const wchar_t* klName, LANGI
     static const PatternMatch PATTERNS[] = {
         // Horizontal layout IMEs (Pinyin-based)
         {"Sogou",   InputMethodType::PINYIN},
+        {"Sougou",  InputMethodType::PINYIN},  // Alternative spelling
         {"SG",      InputMethodType::PINYIN},  // Sogou short name
         {"SGPY",    InputMethodType::PINYIN},
         {"SogouPY", InputMethodType::PINYIN},
+        {"SogouInput", InputMethodType::PINYIN},
         {"QQPY",    InputMethodType::PINYIN},
         {"QQPinyin",InputMethodType::PINYIN},
+        {"QQInput", InputMethodType::PINYIN},
         {"Baidu",   InputMethodType::PINYIN},
         {"BDPY",    InputMethodType::PINYIN},
+        {"BaiduInput", InputMethodType::PINYIN},
         {"Google",  InputMethodType::PINYIN},
         {"GPY",     InputMethodType::PINYIN},
         {"GooglePY",InputMethodType::PINYIN},
+        {"GoogleIME", InputMethodType::PINYIN},
         {"Pinyin",  InputMethodType::PINYIN},
         {"MSPY",    InputMethodType::PINYIN},
         {"Ziguang", InputMethodType::PINYIN},
@@ -140,18 +182,22 @@ InputMethodType detectInputMethodTypeFromLayoutName(const wchar_t* klName, LANGI
         {"WUBI",    InputMethodType::WUBI},
         {"QQWubi",  InputMethodType::WUBI},
         {"QQWB",    InputMethodType::WUBI},
+        {"QQWubi2", InputMethodType::WUBI},
         {"Jidian",  InputMethodType::WUBI},
         {"JD",      InputMethodType::WUBI},
         {"WBJJ",    InputMethodType::WUBI},
         {"SGWB",    InputMethodType::WUBI},
         {"BDWB",    InputMethodType::WUBI},
         {"CCWB",    InputMethodType::WUBI},
+        {"Wangma",  InputMethodType::WUBI},   // Wangma Wubi
+        {"WMWB",    InputMethodType::WUBI},
 
         // Cangjie (Horizontal layout IME — traditional Chinese)
         {"Cangjie",  InputMethodType::CANGJIE},
         {"SCangjie", InputMethodType::CANGJIE},
         {"ChangJie", InputMethodType::CANGJIE},
         {"CJ",       InputMethodType::CANGJIE},
+        {"Changjei", InputMethodType::CANGJIE},
 
         // Sucheng (Quick)
         {"Sucheng", InputMethodType::SUCHENG},
@@ -162,6 +208,12 @@ InputMethodType detectInputMethodTypeFromLayoutName(const wchar_t* klName, LANGI
         {"Zhuyin",       InputMethodType::ZHUYIN},
         {"New Phonetic", InputMethodType::ZHUYIN},
         {"Bopomofo",     InputMethodType::ZHUYIN},
+        {"Mandarin",     InputMethodType::ZHUYIN},
+
+        // Additional IME types
+        {"HongYuan", InputMethodType::PINYIN}, // HongYuan
+        {"Charm",    InputMethodType::PINYIN}, // Charm
+        {"NiceCash", InputMethodType::PINYIN}, // NiceCash
     };
 
     for (const auto& pm : PATTERNS) {

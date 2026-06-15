@@ -144,4 +144,33 @@ void ImeStateManager::clearLayoutChanged() {
     state_.layoutChangeCount = 0;
 }
 
+// Additional helper method to force update of internal state from HKL
+void ImeStateManager::updateFromHkl(long hkl) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (state_.hkl != hkl) {
+        state_.hkl = hkl;
+        state_.layoutChangeCount++;
+        
+        // Update input method type based on HKL
+        DWORD_PTR hklVal = reinterpret_cast<DWORD_PTR>(hkl);
+        WORD imeId = HIWORD(hklVal);
+        LANGID langId = LOWORD(hklVal);
+        
+        InputMethodType detectedType = detectInputMethodTypeFromImeId(imeId, langId);
+        if (state_.inputMethodType != detectedType) {
+            state_.inputMethodType = detectedType;
+            changes_.inputMethodChanged = true;
+            changes_.shiftModeChanged = true;
+        }
+        
+        // Update Chinese mode based on language ID
+        bool isChinese = IsChineseLangId(langId);
+        if (state_.chineseMode != isChinese) {
+            state_.chineseMode = isChinese;
+            changes_.chineseModeChanged = true;
+            changes_.shiftModeChanged = true;
+        }
+    }
+}
+
 } // namespace chineseime
