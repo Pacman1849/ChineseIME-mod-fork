@@ -7,7 +7,7 @@ Minecraft Fabric 模組，為 Windows 上的中文輸入法提供狀態指示與
 - **輸入法狀態指示器** — 在聊天框旁顯示當前輸入法類型（拼/注/倉/速/五）
 - **候選詞 HUD** — 即時顯示輸入法候選詞列表，支援橫式（拼音/五筆）和豎式（倉頡/速成/注音）
 - **中英文模式指示** — Shift 切換時顯示黃色方塊，Caps Lock 時藍色背景
-- **雙通道 IME 同步** — WndProc Hook (IMM32) + TSF Polling，支援微軟拼音/五筆/注音/倉頡/速成
+- **雙通道 IME 同步** — WndProc Hook (IMM32) + TSF Polling，支援微軟拼音/五筆/注音/新注音/倉頡/搜狗倉輸/速成
 
 ## 架構
 
@@ -25,7 +25,7 @@ Java (Fabric Mod)          C++ DLL (Native)
   Render Thread          (IMM32 / TSF)
 ```
 
-**雙通道設計**：現代 TSF 架構輸入法（微軟拼音、五筆、注音）的 `ImmGetCandidateList` 會回傳 0，因此需要同時使用 WndProc Hook 接收 IME 訊息 + TSF API 輪詢讀取候選詞。舊式 IMM32 輸入法（倉頡、速成）則可直接透過 Hook 取得候選詞。
+**雙通道設計**：現代 TSF 架構輸入法（微軟拼音、五筆、注音、新注音等）的 `ImmGetCandidateList` 會回傳 0，因此需要同時使用 WndProc Hook 接收 IME 訊息 + TSF API 輪詢讀取候選詞。舊式 IMM32 輸入法（倉頡、速成、搜狗倉輸等）則可直接透過 Hook 取得候選詞。
 
 ## 環境需求
 
@@ -91,7 +91,9 @@ copy natives\Release\chineseime_native.dll "<多啟動器實例路徑>\minecraft
 | 微軟拼音 | TSF | TSF API (`GUID_PROP_CANDIDATE`) |
 | 微軟五筆 | TSF | TSF API (`GUID_PROP_CANDIDATE`) |
 | 微軟注音 | TSF | TSF API (`GUID_PROP_CANDIDATE`) |
+| 微軟新注音 | TSF | TSF API (`GUID_PROP_CANDIDATE`) |
 | 微軟倉頡 | IMM32 | `ImmGetCandidateList` |
+| 搜狗倉輸 | IMM32 | `ImmGetCandidateList` |
 | 微軟速成 | IMM32 | `ImmGetCandidateList` |
 
 ## 目錄結構
