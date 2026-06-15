@@ -10,11 +10,13 @@ static const std::wstring_view CANDIDATE_WINDOW_CLASSES[] = {
     // Standard Windows IME classes
     L"Cicero", L"IME", L"MSWinCls", L"IMJPCnd", L"CnCand",
     
-    // Sogou IME (搜狗拼音)
+    // Sogou IME (搜狗拼音) and variants
     L"SHGJE",     // Sogou
     L"SoPYComp",  // Sogou composition window
     L"SogouPY",   // Sogou candidate window
     L"SogouInput", // Sogou Input
+    L"SogouPYIM", // Sogou Pinyin IME
+    L"SogouCJIM", // Sogou Cangjie IME
     
     // Tencent QQ Pinyin (QQ拼音) and Wubi (QQ五笔)
     L"TTEdit",    // Tencent
@@ -31,6 +33,8 @@ static const std::wstring_view CANDIDATE_WINDOW_CLASSES[] = {
     // Microsoft IME
     L"mscand",    // Microsoft
     L"MSIM",      // Microsoft IME
+    L"MSPYIM",   // Microsoft Pinyin IME
+    L"MSZYIM",   // Microsoft Zhuyin IME
     
     // Google Pinyin (谷歌拼音)
     L"GooglePinyin", // Google Pinyin
@@ -294,6 +298,23 @@ InputMethodType detectInputMethodTypeFromHkl(HKL hkl) {
     // Special handling for Cantonese (0x0C04) — fall back to PINYIN for zh-HK
     if (type == InputMethodType::OTHER_CHINESE && langId == 0x0C04) {
         return InputMethodType::PINYIN;
+    }
+
+    // Fallback: try to get IME description for unrecognized Chinese IMEs
+    if (type == InputMethodType::OTHER_CHINESE) {
+        // Attempt to get IME description to identify specific variants
+        char desc[256] = {0};
+        if (ImmGetDescription(hkl, desc, sizeof(desc)) > 0) {
+            // Check for Microsoft New Zhuyin
+            if (strstr(desc, "新注音") != nullptr || strstr(desc, "New Zhuyin") != nullptr) {
+                return InputMethodType::ZHUYIN;
+            }
+            // Check for Sogou Cangjie
+            if (strstr(desc, "倉輸") != nullptr || strstr(desc, "Cangjie") != nullptr) {
+                return InputMethodType::CANGJIE;
+            }
+            // Additional fallbacks for other variants can be added here
+        }
     }
 
     return type;
