@@ -25,7 +25,7 @@ jobs:
           cmake -B build
           cmake --build build --config Release
           cd ..
-          ls \natives\Release
+          D:/a/ChineseIME-mod/ChineseIME-mod/natives/
 
       - name: Build JAR
         run: ./gradlew build
