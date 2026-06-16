@@ -25,6 +25,7 @@ jobs:
           cmake -B build
           cmake --build build --config Release
           cd ..
+          ls \natives\Release
 
       - name: Build JAR
         run: ./gradlew build
